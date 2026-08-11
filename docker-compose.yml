@@ -219,6 +219,15 @@ services:
       http_proxy: http://hermes-egress-proxy:3128
       NO_PROXY: ollama-gate,hermes-dispatcher,localhost,127.0.0.1
       no_proxy: ollama-gate,hermes-dispatcher,localhost,127.0.0.1
+      # What the planner needs to reach the target project. No defaults on
+      # purpose: a default token would be a committed credential, and a default
+      # repo would let a misconfigured run plan against the wrong project. All
+      # three come from the gitignored local.env, so an empty value here means
+      # the operator has not set it and the planner should fail loudly rather
+      # than silently plan into nowhere.
+      TARGET_REPO: ${TARGET_REPO:-}
+      TARGET_REPO_TOKEN: ${TARGET_REPO_TOKEN:-}
+      SPEC_ISSUE: ${SPEC_ISSUE:-}
     volumes:
       # The agent's persistent data. Writable by necessity - it is how the agent
       # persists skills and memory. Keep it under git and review the diffs.
