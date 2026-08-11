@@ -48,7 +48,7 @@ MODEL SERVER EXPOSURE
   PASS  model server bound to 127.0.0.1 only (not exposed to the LAN)
 
 MODEL FITNESS
-        no model loaded - send one prompt, then re-run this check
+  PASS  served context 65536 meets the 64000 minimum
 
 CONTAINER PRIVILEGES
   PASS  hermes has no NET_ADMIN
@@ -59,17 +59,19 @@ CONTAINER PRIVILEGES
 DIRECT PROBES INSIDE THE REAL AGENT CONTAINER
   PASS  agent cannot reach 1.1.1.1 by direct IP (no route)
   PASS  agent cannot resolve public DNS
-  PASS  agent cannot reach MongoDB :27017 on the host
-  PASS  agent cannot reach MySQL :3306 on the host
-  PASS  agent cannot reach LocalStack :4566 on the host
+  PASS  agent cannot reach MongoDB via host.docker.internal
+  PASS  agent cannot reach MongoDB via host LAN IP
+  PASS  agent cannot reach MySQL via host LAN IP
+  PASS  agent cannot reach LocalStack via host LAN IP
+  PASS  positive control: agent CAN reach the gate (probe is working)
   PASS  agent blocked from /api/pull (403)
   PASS  host home directory not present inside the agent
   PASS  agent CAN reach the model through the gate (200)
 
-RESULT: 30 passed, 0 failed
+RESULT: 33 passed, 0 failed
 ```
 
-**30 passed, 0 failed.**
+**33 passed, 0 failed.**
 
 The final section probes *inside the running agent container* via `docker exec`.
 The earlier sections use throwaway containers on the same network — a valid
@@ -86,9 +88,10 @@ with the real network namespace — not a throwaway that merely resembles it.
 | `curl https://example.com` | `000` — failed |
 | `curl https://1.1.1.1` (direct IP, no DNS needed) | `000` — failed |
 | DNS resolution of `example.com` | **NO** |
-| `host.docker.internal:27017` (MongoDB) | unreachable |
-| `host.docker.internal:3306` (MySQL) | unreachable |
-| `host.docker.internal:4566` (LocalStack) | unreachable |
+| MongoDB via `host.docker.internal` | name does not resolve |
+| MongoDB via the host's real LAN IP | **ENETUNREACH** (errno 101) |
+| MySQL / LocalStack via the host's LAN IP | **ENETUNREACH** |
+| Gate `:11434` — **positive control** | REACHABLE, so the probe works |
 | `POST /api/pull` via gate | **403** |
 | `POST /api/delete` via gate | **403** |
 | `/Users` (host home) visible in container | **not present** |
@@ -168,3 +171,25 @@ EXTRA_PORTS="4006 9001 3030" ./verify-sandbox.sh # add your own host services
 If `MODEL FITNESS` reports "no model loaded", the model has idled out of memory —
 send one prompt and re-run. It is a warning, not a failure, and does not affect
 the exit code.
+
+## 7. A false pass, found and fixed
+
+An earlier version of this harness tested port reachability from inside the
+container with `sh -c 'echo > /dev/tcp/host/port'`. That is a **bash** feature;
+the image's `sh` is dash, so the probe failed with `Directory nonexistent`
+regardless of whether the port was open. Three checks were reporting containment
+they had never measured.
+
+Replaced with `python3` socket `connect_ex`, and hardened in two ways:
+
+- **Tested against the host's real LAN IP**, not only `host.docker.internal`.
+  The hostname merely fails to resolve; the raw IP returns `ENETUNREACH`
+  (errno 101), which is the kernel confirming there is no route. The stronger
+  claim needs the stronger test, aimed at an IP where the service really listens.
+- **A positive control** is included: the gate must come back reachable. If it
+  does not, the probe cannot detect open ports and every negative result in that
+  section is void, so the harness reports failure rather than a clean sweep.
+
+A security check that cannot fail is not a check. Worth re-reading any probe
+whose result is "nothing happened" and asking what it would look like if the
+thing being tested were broken.

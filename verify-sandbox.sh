@@ -128,14 +128,48 @@ if [ -n "$(docker ps -q -f name="^${NAME}$")" ]; then
   docker exec "$NAME" getent hosts example.com >/dev/null 2>&1 \
     && bad "agent CAN resolve public DNS" || ok "agent cannot resolve public DNS"
 
-  for entry in "27017:MongoDB" "3306:MySQL" "4566:LocalStack"; do
-    port=${entry%%:*}; label=${entry#*:}
-    if docker exec "$NAME" timeout 3 sh -c "echo > /dev/tcp/host.docker.internal/$port" >/dev/null 2>&1; then
-      bad "agent REACHED $label :$port on the host"
-    else
-      ok "agent cannot reach $label :$port on the host"
-    fi
-  done
+  # Port reachability, via python3 sockets rather than the shell's /dev/tcp.
+  # /dev/tcp is a BASH feature; this image's sh is dash, so a /dev/tcp probe
+  # fails with "Directory nonexistent" whether the port is open or not - a
+  # false pass that reports containment it never measured.
+  #
+  # Tested against the host's real LAN IP as well as host.docker.internal, so a
+  # failure is route-level (ENETUNREACH) rather than merely unresolvable DNS.
+  # The gate is included as a POSITIVE CONTROL: if it does not come back
+  # reachable, the probe itself is broken and the negatives mean nothing.
+  HOST_IP="${HOST_IP:-$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')}"
+  probe_out=$(docker exec "$NAME" python3 -c '
+import socket, sys
+host_ip = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
+targets = [("host.docker.internal", 27017, "MongoDB via host.docker.internal")]
+if host_ip:
+    targets += [(host_ip, 27017, "MongoDB via host LAN IP"),
+                (host_ip, 3306,  "MySQL via host LAN IP"),
+                (host_ip, 4566,  "LocalStack via host LAN IP")]
+targets += [("ollama-gate", 11434, "CONTROL gate")]
+for h, p, label in targets:
+    try:
+        s = socket.socket(); s.settimeout(4)
+        rc = s.connect_ex((h, p)); s.close()
+        print("%s|%s" % (label, "OPEN" if rc == 0 else "SHUT"))
+    except Exception as e:
+        print("%s|SHUT" % label)
+' "$HOST_IP" 2>/dev/null)
+
+  [ -n "$HOST_IP" ] || note "could not detect host LAN IP; set HOST_IP=... for a route-level probe"
+  while IFS='|' read -r label state; do
+    [ -n "$label" ] || continue
+    case "$label" in
+      CONTROL*)
+        [ "$state" = "OPEN" ] && ok "positive control: agent CAN reach the gate (probe is working)" \
+                             || bad "positive control FAILED - the probe cannot detect open ports, so the results below are void" ;;
+      *)
+        [ "$state" = "SHUT" ] && ok "agent cannot reach $label" \
+                              || bad "agent REACHED $label" ;;
+    esac
+  done <<EOF
+$probe_out
+EOF
 
   code=$(docker exec "$NAME" curl -s -m 8 -o /dev/null -w '%{http_code}' \
          -X POST "http://${GATE}:11434/api/pull" -d '{"model":"llama3"}' 2>/dev/null)
