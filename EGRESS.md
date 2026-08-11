@@ -111,12 +111,12 @@ $ curl https://codeload.github.com/.../tar.gz/...               -> blocked
 squid's log for that run — every git operation used one host:
 
 ```
-1786466119.429   2000 172.24.0.4 TCP_TUNNEL/200 232186 CONNECT github.com:443 - HIER_DIRECT/140.82.121.3 -
-1786466120.962   1452 172.24.0.4 TCP_TUNNEL/200 5601   CONNECT github.com:443 - HIER_DIRECT/140.82.121.3 -
-1786466121.665    605 172.24.0.4 TCP_TUNNEL/200 3706   CONNECT github.com:443 - HIER_DIRECT/140.82.121.3 -
-1786466122.285    534 172.24.0.4 TCP_TUNNEL/200 3704   CONNECT github.com:443 - HIER_DIRECT/140.82.121.3 -
-1786466122.385      0 172.24.0.4 TCP_DENIED/403 3781   CONNECT api.github.com:443 - HIER_NONE/- text/html
-1786466122.485      0 172.24.0.4 TCP_DENIED/403 3796   CONNECT codeload.github.com:443 - HIER_NONE/- text/html
+1786466119.429   2000 <agent-container> TCP_TUNNEL/200 232186 CONNECT github.com:443 - HIER_DIRECT/<github-ip> -
+1786466120.962   1452 <agent-container> TCP_TUNNEL/200 5601   CONNECT github.com:443 - HIER_DIRECT/<github-ip> -
+1786466121.665    605 <agent-container> TCP_TUNNEL/200 3706   CONNECT github.com:443 - HIER_DIRECT/<github-ip> -
+1786466122.285    534 <agent-container> TCP_TUNNEL/200 3704   CONNECT github.com:443 - HIER_DIRECT/<github-ip> -
+1786466122.385      0 <agent-container> TCP_DENIED/403 3781   CONNECT api.github.com:443 - HIER_NONE/- text/html
+1786466122.485      0 <agent-container> TCP_DENIED/403 3796   CONNECT codeload.github.com:443 - HIER_NONE/- text/html
 ```
 
 | Host | Needed for | Evidence |
@@ -152,7 +152,7 @@ Deliberately **not** allowlisted, each of which will fail loudly if TECH-98 need
 | Rule | Closes |
 |---|---|
 | `deny !agent_net` | squid listens on `0.0.0.0`; without this, every container on the default bridge has a free open proxy. The subnet is generated from the real network by `setup-egress.sh`. |
-| `deny ip_literal` | `CONNECT 1.1.1.1:443` — skipping DNS so no `dstdomain` rule can match. Covers IPv4 and IPv6 literals. Also blocks `CONNECT 140.82.121.4:443`, i.e. github.com's *own* IP: the allowlist is a name check, so a name is required. |
+| `deny ip_literal` | `CONNECT 1.1.1.1:443` — skipping DNS so no `dstdomain` rule can match. Covers IPv4 and IPv6 literals. Also blocks `CONNECT <github-ip>:443`, i.e. github.com's *own* IP: the allowlist is a name check, so a name is required. |
 | `deny !CONNECT` | the proxy fetching a URL on the agent's behalf — including `http://169.254.169.254/…` (cloud metadata) and `http://host.docker.internal:11434/api/pull`. The proxy tunnels or it refuses; it never originates a request. |
 | `deny CONNECT !SSL_ports` | `CONNECT github.com:22` (ssh, hence port forwarding), and `CONNECT host.docker.internal:27017`. Port 443 only. |
 | `allow allowed_domains` | exact hostnames from a read-only file. No leading-dot wildcards, so `github.com.attacker.example` does not match — the harness checks that no wildcard has crept in. |
@@ -181,11 +181,11 @@ POSITIVE CONTROLS  (if these fail, every negative below is void)
   PASS  allowed domain tunnels: CONNECT codeload.github.com:443 -> 200
 
 BYPASS: NO DIRECT ROUTE WITH THE PROXY IGNORED
-  PASS  no route to github.com by raw IP (140.82.121.4:443, SHUT:101) - a port that genuinely listens, so this is route-level
+  PASS  no route to github.com by raw IP (<github-ip>:443, SHUT:101) - a port that genuinely listens, so this is route-level
   PASS  no route to 1.1.1.1:443 by raw IP (SHUT:101)
   PASS  no route to outbound DNS (8.8.8.8:53, SHUT:101)
   PASS  no route to host services (host.docker.internal:27017, SHUT:dns)
-  PASS  no route to host services by host LAN IP (192.168.178.102:27017, SHUT:101)
+  PASS  no route to host services by host LAN IP (<host-lan-ip>:27017, SHUT:101)
   PASS  agent cannot resolve github.com (the proxy does DNS, the agent never does)
   PASS  curl --noproxy to github.com's IP fails (no route)
   PASS  with proxy vars unset, https://example.com fails
@@ -193,7 +193,7 @@ BYPASS: NO DIRECT ROUTE WITH THE PROXY IGNORED
 DOMAIN ALLOWLIST  (refusals must come FROM THE PROXY, i.e. 403)
   PASS  non-allowed domain refused by the proxy: CONNECT example.com:443 -> 403
   PASS  raw-IP CONNECT refused: CONNECT 1.1.1.1:443 -> 403 (DNS cannot be skipped)
-  PASS  raw-IP CONNECT to an ALLOWED host's IP refused (140.82.121.4:443 -> 403)
+  PASS  raw-IP CONNECT to an ALLOWED host's IP refused (<github-ip>:443 -> 403)
   PASS  IPv6-literal CONNECT refused
   PASS  lookalike domain refused (github.com.p2-not-github.example)
   PASS  non-443 port refused on an allowed domain (CONNECT github.com:22 -> 403)
@@ -269,7 +269,7 @@ $ docker exec p2-agent curl -s -o /dev/null -w '%{http_code} %{size_request}\n' 
 404 114
 
 # and all the proxy logged:
-1786466930.430  738 172.24.0.4 TCP_TUNNEL/200 4726 CONNECT github.com:443 - HIER_DIRECT/140.82.121.4 -
+1786466930.430  738 <agent-container> TCP_TUNNEL/200 4726 CONNECT github.com:443 - HIER_DIRECT/<github-ip> -
 ```
 
 The 404 is irrelevant; the bytes reached GitHub. A gist, an issue comment, a fork, or

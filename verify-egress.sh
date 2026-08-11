@@ -70,7 +70,12 @@ shut() { case "$1" in SHUT*) return 0;; *) return 1;; esac; }
 
 # One real GitHub address, resolved on the HOST so the probe below aims at a port
 # that genuinely listens. A closed port is indistinguishable from a blocked one.
-GH_IP=$(python3 -c "import socket;print(socket.gethostbyname('github.com'))" 2>/dev/null || echo 140.82.121.3)
+#
+# Deliberately NOT falling back to a hardcoded literal: these addresses rotate, and
+# a stale one would aim the probe at a port nobody is listening on, turning a
+# meaningless timeout into a "blocked" PASS. If resolution fails, the check is
+# skipped and says so - an absent check is honest, a false pass is not.
+GH_IP=$(python3 -c "import socket;print(socket.gethostbyname('github.com'))" 2>/dev/null || echo "")
 
 echo
 echo "TOPOLOGY"
@@ -113,6 +118,10 @@ echo
 echo "BYPASS: NO DIRECT ROUTE WITH THE PROXY IGNORED"
 # The threat is not a cooperative client. It is an agent that never reads
 # HTTPS_PROXY at all -- so every probe here bypasses it deliberately.
+if [ -z "$GH_IP" ]; then
+  note "could not resolve github.com on the host - raw-IP checks skipped (not passed)"
+fi
+if [ -n "$GH_IP" ]; then
 r=$(direct_tcp "$GH_IP" 443)
 shut "$r" && ok "no route to github.com by raw IP ($GH_IP:443, $r) - a port that genuinely listens, so this is route-level" \
           || bad "REACHED github.com directly by IP - the proxy is not the only path out"
@@ -141,6 +150,7 @@ code=$(docker exec "$AGENT" curl -s -m 8 --noproxy '*' -o /dev/null -w '%{http_c
        "https://$GH_IP" 2>/dev/null)
 [ "${code:-000}" = "000" ] && ok "curl --noproxy to github.com's IP fails (no route)" \
                            || bad "curl --noproxy reached github.com -> $code"
+fi   # end GH_IP-dependent checks
 code=$(docker exec "$AGENT" env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy \
        curl -s -m 8 -o /dev/null -w '%{http_code}' https://example.com 2>/dev/null)
 [ "${code:-000}" = "000" ] && ok "with proxy vars unset, https://example.com fails" \
@@ -154,9 +164,13 @@ echo "DOMAIN ALLOWLIST  (refusals must come FROM THE PROXY, i.e. 403)"
 [ "$(proxy_req "1.1.1.1:443")" = "403" ] \
   && ok "raw-IP CONNECT refused: CONNECT 1.1.1.1:443 -> 403 (DNS cannot be skipped)" \
   || bad "raw-IP CONNECT was NOT refused - the allowlist is sidesteppable"
-[ "$(proxy_req "$GH_IP:443")" = "403" ] \
-  && ok "raw-IP CONNECT to an ALLOWED host's IP refused ($GH_IP:443 -> 403)" \
-  || bad "CONNECT $GH_IP:443 allowed - the allowlist is a name check only"
+if [ -n "$GH_IP" ]; then
+  [ "$(proxy_req "$GH_IP:443")" = "403" ] \
+    && ok "raw-IP CONNECT to an ALLOWED host's IP refused ($GH_IP:443 -> 403)" \
+    || bad "CONNECT $GH_IP:443 allowed - the allowlist is a name check only"
+else
+  note "github.com did not resolve - the allowed-host raw-IP check was skipped"
+fi
 [ "$(proxy_req "[2606:4700:4700::1111]:443")" = "403" ] \
   && ok "IPv6-literal CONNECT refused" || bad "IPv6-literal CONNECT was NOT refused"
 [ "$(proxy_req "github.com.p2-not-github.example:443")" = "403" ] \

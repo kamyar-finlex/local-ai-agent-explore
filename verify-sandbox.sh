@@ -9,7 +9,7 @@
 # demo or a CI job on it.
 #
 # Add your own host services to check with EXTRA_PORTS, e.g.
-#   EXTRA_PORTS="4006 9001 3030" ./verify-sandbox.sh
+#   EXTRA_PORTS="8080 9000" ./verify-sandbox.sh
 
 set -uo pipefail
 NETWORK=hermes-isolated

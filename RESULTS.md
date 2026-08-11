@@ -160,7 +160,7 @@ Stated plainly rather than left implied:
 ```bash
 ./setup-sandbox.sh
 ./verify-sandbox.sh                              # expect: 0 failed
-EXTRA_PORTS="4006 9001 3030" ./verify-sandbox.sh # add your own host services
+EXTRA_PORTS="8080 9000" ./verify-sandbox.sh      # add your own host services
 ```
 
 If `MODEL FITNESS` reports "no model loaded", the model has idled out of memory —
