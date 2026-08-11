@@ -49,6 +49,22 @@ if [ -n "$(docker ps -aq -f name="^${NAME}$")" ]; then
   echo "cleared a stopped leftover container named '$NAME'."
 fi
 
+# A --memory value larger than the Docker VM's own RAM is not a limit at all: the
+# container can consume the whole VM before the cgroup ever binds. On Docker
+# Desktop the VM is often far smaller than the host (measured here: 36 GB host,
+# 7.65 GiB VM), so size the cap against the VM and say so out loud.
+VM_MEM_MB=$(docker info --format '{{.MemTotal}}' 2>/dev/null | awk '{printf "%d", $1/1048576}')
+MEM_LIMIT="${MEM_LIMIT:-}"
+if [ -z "$MEM_LIMIT" ]; then
+  if [ -n "$VM_MEM_MB" ] && [ "$VM_MEM_MB" -gt 0 ] 2>/dev/null; then
+    # Leave ~25% of the VM for the gate, any workers, and the daemon itself.
+    MEM_LIMIT="$(( VM_MEM_MB * 75 / 100 ))m"
+  else
+    MEM_LIMIT="4g"
+  fi
+fi
+echo "memory cap: $MEM_LIMIT (Docker VM total: ${VM_MEM_MB:-unknown} MiB) - override with MEM_LIMIT=..."
+
 echo "preflight OK: network internal, gate up, egress paths blocked, model reachable."
 
 exec docker run -it --rm \
@@ -58,7 +74,7 @@ exec docker run -it --rm \
   --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
   --cap-add DAC_OVERRIDE --cap-add FOWNER \
   --security-opt no-new-privileges \
-  --memory 8g \
+  --memory "$MEM_LIMIT" \
   --cpus 4 \
   --pids-limit 512 \
   --tmpfs /tmp:size=1g \
