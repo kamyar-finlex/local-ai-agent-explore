@@ -191,6 +191,8 @@ not what is being demonstrated.
 | `verify-sandbox.sh` | Host-side boundary verification |
 | `Modelfile.gpt-oss-64k` | Raises served context to 65536 |
 | `hermes-config.example.yaml` | Model wiring — placeholders only, no secrets |
+| `TESTING.md` | Step-by-step procedure to reproduce the results |
+| `RESULTS.md` | Captured output from a full run |
 
 ## Notes
 
