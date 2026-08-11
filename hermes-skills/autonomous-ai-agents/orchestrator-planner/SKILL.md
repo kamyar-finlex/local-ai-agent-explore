@@ -61,12 +61,40 @@ python3 $P3/p3-plan-lint.py --repo owner/name --parent N
 
 ## Procedure
 
-Each step ends with a criterion you can check. Do not start the next step until
-it holds.
+**Run this first, before anything else, exactly as written:**
 
-1. **Open the plan.** `terminal(command="python3 $P3/p3-plan.py init --repo $TARGET_REPO --spec N")`.
-   *Done when* the ledger path is printed. If it says the plan already exists,
-   you are resuming: run `status` and skip to the step it names.
+```
+terminal(command="export P3=\"$HERMES_HOME/skills/autonomous-ai-agents/orchestrator-planner/scripts\"; python3 $P3/p3-plan.py init --repo \"$TARGET_REPO\" --spec \"$SPEC_ISSUE\"")
+```
+
+`TARGET_REPO`, `SPEC_ISSUE`, `HERMES_HOME` and the token are **already in your
+environment**. Do not ask which repository or which issue — reading them is the
+first command's job. If one is genuinely empty the command fails and says which,
+which is the only reliable way to find out.
+
+### Do not, before or during this
+
+- **Do not ask the human which repo or issue.** It is `$TARGET_REPO` / `$SPEC_ISSUE`.
+- **Do not clone the target repository.** `spec-show` fetches the issue and the
+  README for you. A clone tells you nothing extra and costs turns.
+- **Do not explore the filesystem** — no `git status`, no `grep` for the project,
+  no reading `pyproject.toml`. You are planning a project that does not exist yet;
+  there is nothing on disk to find.
+- **Do not use `jq`** — it is not installed. `curl | jq` fails with exit 127, which
+  looks like a network error and is not one.
+- **Do not conclude the network is blocked.** Egress is proxied and works for
+  `github.com` and `api.github.com`. If a command fails, read the actual error
+  before diagnosing; a missing binary and an unreachable host look alike from a
+  pipeline's exit code.
+- **Do not write issue bodies yourself.** `p3-plan.py` renders them. Your output is
+  fields, not markdown.
+
+Each step below ends with a criterion you can check. Do not start the next step
+until it holds.
+
+1. **Open the plan.** The command above. *Done when* the ledger path is printed.
+   If it says the plan already exists, you are resuming: run
+   `python3 $P3/p3-plan.py status` and skip to the step it names.
 
 2. **Read the specification once.** `terminal(command="python3 $P3/p3-plan.py spec-show")`
    saves the spec issue and the target README under `plan/`. Read the README with
