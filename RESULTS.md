@@ -16,10 +16,9 @@ Every figure below is captured output, not a summary written from memory.
 
 ## 1. Host-side harness
 
-`EXTRA_PORTS="..." ./verify-sandbox.sh` — exit code 0.
+`./verify-sandbox.sh` — exit code 0.
 
 ```
-
 NETWORK ISOLATION
   PASS  hermes-isolated is --internal (no gateway, no egress)
   PASS  internet (HTTPS) unreachable
@@ -31,9 +30,6 @@ HOST SERVICES UNREACHABLE
   PASS  PostgreSQL :5432 unreachable
   PASS  Redis :6379 unreachable
   PASS  LocalStack :4566 unreachable
-  PASS  host service :4006 unreachable
-  PASS  host service :9001 unreachable
-  PASS  host service :3030 unreachable
 
 GATE ALLOWLIST
   PASS  model download (indirect internet egress) blocked (403)
@@ -52,7 +48,7 @@ MODEL SERVER EXPOSURE
   PASS  model server bound to 127.0.0.1 only (not exposed to the LAN)
 
 MODEL FITNESS
-  PASS  served context 65536 meets the 64000 minimum
+        no model loaded - send one prompt, then re-run this check
 
 CONTAINER PRIVILEGES
   PASS  hermes has no NET_ADMIN
@@ -60,11 +56,25 @@ CONTAINER PRIVILEGES
   PASS  no docker.sock mounted
   PASS  hermes only on hermes-isolated
 
-RESULT: 26 passed, 0 failed
+DIRECT PROBES INSIDE THE REAL AGENT CONTAINER
+  PASS  agent cannot reach 1.1.1.1 by direct IP (no route)
+  PASS  agent cannot resolve public DNS
+  PASS  agent cannot reach MongoDB :27017 on the host
+  PASS  agent cannot reach MySQL :3306 on the host
+  PASS  agent cannot reach LocalStack :4566 on the host
+  PASS  agent blocked from /api/pull (403)
+  PASS  host home directory not present inside the agent
+  PASS  agent CAN reach the model through the gate (200)
 
+RESULT: 30 passed, 0 failed
 ```
 
-**26 passed, 0 failed.**
+**30 passed, 0 failed.**
+
+The final section probes *inside the running agent container* via `docker exec`.
+The earlier sections use throwaway containers on the same network — a valid
+inference given the privilege check confirms which network the agent is on, but
+the direct probes remove the inference step entirely.
 
 ## 2. Probes from inside the live agent container
 

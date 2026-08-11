@@ -114,5 +114,50 @@ else
 fi
 
 echo
+echo "DIRECT PROBES INSIDE THE REAL AGENT CONTAINER"
+# The checks above run in throwaway containers on the same network. That is a
+# valid inference (same network => same reachability, given the privilege check
+# confirms which network the agent is on) but it is not a direct measurement.
+# These probes execute inside the actual agent container instead.
+if [ -n "$(docker ps -q -f name="^${NAME}$")" ]; then
+  # Direct IP as well as a hostname: proves there is no ROUTE, not merely that
+  # DNS is unavailable. A DNS-only failure would be a much weaker result.
+  code=$(docker exec "$NAME" curl -s -m 8 -o /dev/null -w '%{http_code}' https://1.1.1.1 2>/dev/null)
+  [ "${code:-000}" = "000" ] && ok "agent cannot reach 1.1.1.1 by direct IP (no route)" \
+                             || bad "agent reached 1.1.1.1 -> HTTP $code"
+  docker exec "$NAME" getent hosts example.com >/dev/null 2>&1 \
+    && bad "agent CAN resolve public DNS" || ok "agent cannot resolve public DNS"
+
+  for entry in "27017:MongoDB" "3306:MySQL" "4566:LocalStack"; do
+    port=${entry%%:*}; label=${entry#*:}
+    if docker exec "$NAME" timeout 3 sh -c "echo > /dev/tcp/host.docker.internal/$port" >/dev/null 2>&1; then
+      bad "agent REACHED $label :$port on the host"
+    else
+      ok "agent cannot reach $label :$port on the host"
+    fi
+  done
+
+  code=$(docker exec "$NAME" curl -s -m 8 -o /dev/null -w '%{http_code}' \
+         -X POST "http://${GATE}:11434/api/pull" -d '{"model":"llama3"}' 2>/dev/null)
+  [ "$code" = "403" ] && ok "agent blocked from /api/pull (403)" \
+                      || bad "agent got $code from /api/pull, expected 403"
+
+  docker exec "$NAME" sh -c 'ls /Users' >/dev/null 2>&1 \
+    && bad "host home directory /Users is VISIBLE inside the agent" \
+    || ok "host home directory not present inside the agent"
+
+  # The permitted hole must still work, or the sandbox is merely broken.
+  code=$(docker exec "$NAME" curl -s -m 240 -o /dev/null -w '%{http_code}' \
+         -X POST "http://${GATE}:11434/v1/chat/completions" \
+         -H 'Content-Type: application/json' \
+         -d '{"model":"'"${MODEL:-gpt-oss:20b-64k}"'","messages":[{"role":"user","content":"hi"}],"max_tokens":512}' 2>/dev/null)
+  [ "$code" = "200" ] && ok "agent CAN reach the model through the gate (200)" \
+                      || bad "agent cannot reach the model: HTTP $code"
+else
+  note "$NAME is not running - direct in-container probes skipped"
+  note "start it with ./run-hermes.sh and re-run for the strongest result"
+fi
+
+echo
 printf 'RESULT: %d passed, %d failed\n\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1
