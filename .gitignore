@@ -1,0 +1,11 @@
+# Never commit a real agent config - it can carry provider keys and messaging
+# platform tokens. Only hermes-config.example.yaml belongs here.
+config.yaml
+*.local.yaml
+.env
+.env.*
+
+# Captured session transcripts may contain whatever was discussed with the agent.
+*.log
+hermes-session-*
+hermes-demo-*

@@ -1,0 +1,14 @@
+FROM gpt-oss:20b
+
+# Hermes Agent refuses to initialise below a 64,000-token context window.
+#
+# Neither OLLAMA_CONTEXT_LENGTH nor the model's advertised window can be trusted
+# to produce it: the GUI-launched Ollama server ignored that variable and served
+# its own 32768 default. A Modelfile num_ctx is the reliable lever, but it is
+# clamped to the model's trained maximum -- a model declaring 40960 cannot reach
+# 64K by any means. gpt-oss:20b declares 131072, so 65536 is well inside its
+# window and is applied verbatim.
+#
+# 65536 rather than the full 131072 to keep the KV cache modest. Confirm the
+# value actually served with:  curl -s localhost:11434/api/ps
+PARAMETER num_ctx 65536

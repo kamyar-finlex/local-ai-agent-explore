@@ -1,0 +1,32 @@
+# Model wiring for Hermes Agent pointed at the sandboxed local model.
+#
+# Merge this `model:` block into the agent's own config file. Everything here is
+# a placeholder or a local hostname -- NO SECRETS. Do not commit a real config;
+# it can carry messaging-platform tokens and provider keys.
+
+model:
+  # The derived model from Modelfile.gpt-oss-64k, not the base gpt-oss:20b --
+  # the base serves 32768, below the orchestrator's 64,000 minimum.
+  default: gpt-oss:20b-64k
+
+  # "ollama" is an alias for a generic OpenAI-compatible endpoint.
+  provider: ollama
+
+  # Ollama requires no authentication, but the OpenAI client library rejects an
+  # empty key. This literal string is a placeholder, not a credential.
+  api_key: ollama
+
+  # The gate's name on the internal network. NOT host.docker.internal -- the
+  # agent has no route to the host; the gate is its only reachable destination.
+  base_url: http://ollama-gate:11434/v1
+
+  # MUST match what the server actually serves, read from /api/ps. Setting this
+  # higher than the real window makes the agent pack prompts that are then
+  # silently truncated.
+  context_length: 65536
+
+# Leave the orchestrator's own safety defaults alone:
+#   - unseen shell hooks require an interactive prompt (do not pass --accept-hooks)
+#   - dangerous commands require approval        (do not pass --yolo)
+#   - keep any terminal backend set to "local"; a docker backend would need the
+#     Docker socket, which is host root and voids the sandbox entirely
