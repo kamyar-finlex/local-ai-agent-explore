@@ -12,3 +12,30 @@ FROM gpt-oss:20b
 # 65536 rather than the full 131072 to keep the KV cache modest. Confirm the
 # value actually served with:  curl -s localhost:11434/api/ps
 PARAMETER num_ctx 65536
+
+# gpt-oss ships with temperature 1.0. Lowered here as insurance on structured
+# output, NOT as a proven fix for anything.
+#
+# The prompting case: a live run died when the model emitted an unparseable tool
+# call and burned all three retries --
+#
+#   raw='{"background":true,"command":"...","notify_on-???"},'
+#   err=invalid character '}' after object key
+#
+# High temperature was the obvious suspect, so it was tested: 24 calls at temp
+# 1.0 across a simple schema, a 7-tool call with a 20 KB system prompt, and a
+# streamed call. All 24 parsed. The hypothesis is unsupported, and whatever
+# caused that failure is still unexplained -- possibly a rare sampling tail, or
+# something specific to the agent's own schemas in a long conversation.
+#
+# 0.2 stays because an orchestrator's output is almost entirely structured and
+# sampling diversity buys nothing here. It is a reasonable default, not a
+# diagnosis. If the malformed call recurs, capture the raw= string: that is the
+# evidence this change was NOT the answer.
+PARAMETER temperature 0.2
+PARAMETER top_p 0.9
+PARAMETER top_k 40
+
+# Low temperature makes repetition loops more likely; a mild penalty offsets that
+# without distorting the token distribution enough to matter for JSON.
+PARAMETER repeat_penalty 1.05
