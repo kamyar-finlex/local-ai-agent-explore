@@ -88,6 +88,23 @@ which is the only reliable way to find out.
   pipeline's exit code.
 - **Do not write issue bodies yourself.** `p3-plan.py` renders them. Your output is
   fields, not markdown.
+- **Do not write any application code. Not one file.** You are planning the project;
+  workers implement it. The paths under `Files touched` describe what a worker will
+  create — writing them yourself means the tickets describe work already done, and
+  the code lands in the agent's own directory rather than the target repository,
+  where it is useless to everyone. If you catch yourself creating `__init__.py` or a
+  test, stop: that is a worker's ticket, not your job.
+- **Do not verify anything by running it.** There is no code yet. An acceptance
+  command that fails today is correct — it is what a worker makes pass.
+- **Do not stop after one ticket and ask the human for the rest.** Planning the whole
+  spec is the task. One ticket is not a plan.
+
+### You are finished when, and only when
+
+`p3-plan.py status` reports **`pending=0`** and every path in the recorded layout is
+created by exactly one ticket. Until then you have a partial plan, not a plan.
+Emitting is the last step and it is yours to run — not something to hand back with
+instructions for someone else to finish.
 
 Each step below ends with a criterion you can check. Do not start the next step
 until it holds.
@@ -98,7 +115,7 @@ until it holds.
 
 2. **Read the specification once.** `terminal(command="python3 $P3/p3-plan.py spec-show")`
    saves the spec issue and the target README under `plan/`. Read the README with
-   `read_file` if the spec references it. *Done when* you can name the project's
+   `terminal(command="cat plan/readme.md")` if the spec references it. *Done when* you can name the project's
    language, its test runner, and every distinct behaviour the spec asks for.
    If the spec does not say enough to choose a file layout, stop and comment on
    the spec issue asking the human — do not invent a project.
@@ -210,7 +227,7 @@ work — `Blocked-by` does. Never express a dependency as a priority.
 ## Context discipline
 
 - One ticket per turn. Never batch several `add` calls into one command.
-- The spec is on disk after step 2; re-read `plan/spec.md` with `read_file`
+- The spec is on disk after step 2; re-read it with `cat plan/spec.md`
   rather than restating it in the conversation.
 - `--details` is 40–80 words and points at README section names instead of
   copying them.

@@ -206,6 +206,12 @@ services:
   hermes:
     image: nousresearch/hermes-agent
     container_name: hermes
+    # Preload the planner skill rather than leaving the model to find it among
+    # 80. Two reasons: the skill's content is in the prompt from turn one, so it
+    # cannot be skipped; and observed behaviour was that it loaded the skill and
+    # then improvised anyway, which is what having to *choose* to read something
+    # invites.
+    command: ["--skills", "orchestrator-planner"]
     networks: [isolated]
     depends_on:
       preflight: {condition: service_completed_successfully}

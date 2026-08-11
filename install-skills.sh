@@ -47,7 +47,12 @@ echo "$installed skill(s) into $DEST"
 #   1. Context. Tool definitions consumed ~23% of a 65,536-token window before
 #      any work began, on a model that has little to spare.
 #   2. Wrong turns. Given a browser and a web search, a small model reaches for
-#      them instead of the command the skill prescribes. Observed: it tried to
+#      them instead of the command the skill prescribes. `file` is dropped for a
+#      sharper reason: its write_file is how the planner started writing the
+#      application itself -- __init__.py, an app module, a test -- into the
+#      agent's own data directory, where the code is useless and the tickets it
+#      then wrote described work already done. The planner reads exactly one
+#      file, plan/readme.md, and `cat` through terminal does that. Observed: it tried to
 #      read a GitHub issue through browser automation, then through `curl | jq`
 #      (no jq installed, exit 127), and concluded from that the network was
 #      blocked -- while a one-line script call would have fetched it.
@@ -55,8 +60,8 @@ echo "$installed skill(s) into $DEST"
 # Removing the option is more reliable than instructing against it. This is the
 # same lesson as the write_file allowlist: a prohibition a tool can still reach
 # around is a guardrail, not a control.
-KEEP="terminal file skills todo memory"
-DROP="web browser code_execution vision image_gen bfl tts computer_use delegation cronjob session_search clarify"
+KEEP="terminal skills todo memory"
+DROP="web browser file code_execution vision image_gen bfl tts computer_use delegation cronjob session_search clarify"
 
 if docker ps --format '{{.Names}}' | grep -qx hermes; then
   docker exec hermes hermes tools disable $DROP >/dev/null 2>&1 \
