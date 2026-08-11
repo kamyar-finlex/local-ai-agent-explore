@@ -79,6 +79,14 @@ docker compose ps
 
 if [ "$ATTACH" = "1" ]; then
   echo
-  echo "attaching to the orchestrator - detach with Ctrl-P Ctrl-Q, stop with 'docker compose down'"
-  exec docker attach hermes
+  echo "starting an agent session - leave it with /exit, stop the stack with 'docker compose down'"
+  # `docker attach` is wrong for this image under compose. Started detached, the
+  # entrypoint runs its gateway and parks the main service on `sleep infinity`,
+  # so attaching connects to a sleeping process and shows a dead terminal. Worse,
+  # typing /exit in a previous session leaves the container Up and healthy with
+  # no agent inside it - the stack looks fine and cannot be talked to.
+  #
+  # Exec-ing a fresh agent gives a real TTY every time, and leaving a session
+  # ends only that session rather than emptying the container.
+  exec docker compose exec hermes hermes --skills orchestrator-planner
 fi
