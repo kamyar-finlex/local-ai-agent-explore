@@ -10,6 +10,19 @@
 # Every negative result is paired with a positive control. A probe that reports
 # "blocked" when it is merely broken is worse than no probe at all: see
 # RESULTS.md section 7 for the /dev/tcp false pass this discipline caught.
+#
+# Runs against the COMPOSED stack (docker-compose.yml). Two things changed when
+# the p2-* prototype was consolidated, and neither weakens a check:
+#
+#   - The probe subject is the REAL orchestrator container, not the p2-agent
+#     stand-in. It has git, curl and python3, so every probe that used to run in
+#     a lookalike now runs in the thing being confined. That is strictly
+#     stronger - there is no longer an inferential step.
+#   - The proxy's outward side is a compose-managed bridge network rather than
+#     Docker's default `bridge`. The open-proxy check therefore aims at THAT
+#     network, which is where a neighbour container would actually be; aiming it
+#     at the default bridge would test a network the proxy is not even on and
+#     pass without measuring anything.
 
 set -uo pipefail
 
@@ -19,11 +32,14 @@ set -uo pipefail
 HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 [ -f "$HERE_DIR/local.env" ] && . "$HERE_DIR/local.env"
-NETWORK=p2-egress-isolated
-PROXY=p2-egress-proxy
-GATE=p2-model-gate
-AGENT=p2-agent
-ALLOWFILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/egress-allowed-domains.txt"
+NETWORK="${ISOLATED_NETWORK:-hermes-isolated}"
+EGRESS_NETWORK="${EGRESS_NETWORK:-hermes-egress}"
+PROXY="${PROXY_NAME:-hermes-egress-proxy}"
+GATE="${GATE_NAME:-ollama-gate}"
+AGENT="${AGENT_NAME:-hermes}"
+NEIGHBOUR_IMAGE="${NEIGHBOUR_IMAGE:-hermes-worker:latest}"
+ALLOWFILE="$HERE_DIR/egress-allowed-domains.txt"
+AGENTNETFILE="$HERE_DIR/egress-agent-net.conf"
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; pass=$((pass+1)); }
@@ -31,7 +47,7 @@ bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=$((fail+1)); }
 note() { printf '        %s\n' "$1"; }
 
 if [ -z "$(docker ps -q -f name="^${AGENT}$")" ]; then
-  echo "$AGENT is not running - run ./setup-egress.sh first" >&2; exit 1
+  echo "$AGENT is not running - bring the stack up with 'docker compose up -d'" >&2; exit 1
 fi
 
 # Ask the proxy for a tunnel and report the status line it answers with. Speaking
@@ -96,8 +112,17 @@ docker inspect "$AGENT" --format '{{.HostConfig.CapAdd}}' | grep -q NET_ADMIN \
   && bad "$AGENT has NET_ADMIN - it can install its own route out" \
   || ok "$AGENT has no NET_ADMIN (cannot install a route)"
 docker inspect "$PROXY" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' \
-  | grep -qw bridge && ok "$PROXY is dual-homed (the single hole, by design)" \
+  | grep -qw "$EGRESS_NETWORK" && ok "$PROXY is dual-homed (the single hole, by design)" \
   || bad "$PROXY has no egress side - nothing can get out at all"
+# The squid client ACL is a COMMITTED file now, not one generated from the live
+# network at setup time. That trade buys a single declarative source but creates
+# a way for the two to drift: a stale subnet here either denies everything or,
+# if the subnet is later reused by another network, hands them an open proxy.
+acl_subnet=$(grep -oE '[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}' "$AGENTNETFILE" | head -1)
+net_subnet=$(docker network inspect "$NETWORK" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null)
+[ -n "$acl_subnet" ] && [ "$acl_subnet" = "$net_subnet" ] \
+  && ok "proxy client ACL subnet matches the live isolated network ($acl_subnet)" \
+  || bad "ACL subnet '$acl_subnet' != network subnet '$net_subnet' - the pinned subnet has drifted"
 
 echo
 echo "POSITIVE CONTROLS  (if these fail, every negative below is void)"
@@ -109,17 +134,23 @@ code=$(docker exec "$AGENT" curl -s -m 25 -o /dev/null -w '%{http_code}' \
 [ "${code:-000}" != "000" ] \
   && ok "allowed domain reachable through the proxy: https://github.com -> $code" \
   || bad "github.com NOT reachable through the proxy - the egress path is broken"
+# The endpoint `gh issue`/`gh pr create` actually talk to. Unauthenticated, so
+# GitHub answers 401 - which is the point: TLS came up and GitHub replied, with
+# no credential used anywhere in this harness.
 code=$(docker exec "$AGENT" curl -s -m 25 -o /dev/null -w '%{http_code}' \
-       https://api.linear.app/graphql 2>/dev/null)
+       https://api.github.com/user 2>/dev/null)
 [ "${code:-000}" != "000" ] \
-  && ok "allowed domain reachable through the proxy: api.linear.app -> $code (TLS up)" \
-  || bad "api.linear.app NOT reachable through the proxy"
-for dom in api.github.com codeload.github.com; do
-  grep -qE "^${dom}$" "$ALLOWFILE" || continue
+  && ok "allowed domain reachable through the proxy: api.github.com -> $code (TLS up, unauthenticated)" \
+  || bad "api.github.com NOT reachable through the proxy - the issue/PR path is broken"
+# Driven by the allowlist file rather than a hardcoded list, so adding a host
+# means it gets reachability-checked and removing one stops being checked
+# without anybody having to remember to edit this script.
+while read -r dom; do
+  case "$dom" in ''|'#'*) continue;; esac
   [ "$(proxy_req "${dom}:443")" = "200" ] \
     && ok "allowed domain tunnels: CONNECT ${dom}:443 -> 200" \
     || bad "CONNECT ${dom}:443 was refused, but it is on the allowlist"
-done
+done < "$ALLOWFILE"
 
 echo
 echo "BYPASS: NO DIRECT ROUTE WITH THE PROXY IGNORED"
@@ -186,6 +217,16 @@ fi
 [ "$(proxy_req "github.com:22")" = "403" ] \
   && ok "non-443 port refused on an allowed domain (CONNECT github.com:22 -> 403)" \
   || bad "CONNECT github.com:22 allowed - ssh tunnels out through the proxy"
+# Hosts that were REMOVED from the allowlist. A removal that was written down
+# but never reloaded into squid leaves the old hole open and looks identical to
+# a removal that worked, so each retired host gets its own refusal check.
+for gone in api.linear.app codeload.github.com objects.githubusercontent.com; do
+  grep -qE "^${gone}$" "$ALLOWFILE" \
+    && { bad "$gone is back on the allowlist - this check is about hosts that were removed"; continue; }
+  [ "$(proxy_req "${gone}:443")" = "403" ] \
+    && ok "retired host refused: CONNECT ${gone}:443 -> 403" \
+    || bad "${gone} is still reachable - the allowlist change did not take effect"
+done
 [ "$(proxy_req "host.docker.internal:27017")" = "403" ] \
   && ok "proxy will not tunnel to host services (host.docker.internal:27017 -> 403)" \
   || bad "the proxy tunnelled to a HOST service - it is dual-homed, so this is reachable"
@@ -197,31 +238,45 @@ fi
 
 echo
 echo "PROXY IS NOT AN OPEN PROXY FOR THE REST OF THE HOST"
-PROXY_BRIDGE_IP=$(docker inspect "$PROXY" \
-  --format '{{with index .NetworkSettings.Networks "bridge"}}{{.IPAddress}}{{end}}' 2>/dev/null)
-if [ -n "$PROXY_BRIDGE_IP" ]; then
+# squid listens on 0.0.0.0, and the proxy is dual-homed, so its egress-side
+# address is a proxy port offered to every neighbour on that network. Under the
+# compose topology the neighbours live on $EGRESS_NETWORK, so that is where the
+# probe must come from. (Probing the default `bridge` instead would test a
+# network the proxy is not attached to and pass without measuring anything - a
+# false pass of the same family as the /dev/tcp one in RESULTS.md section 7.)
+neighbour_probe() { # network ip -> 403 | UNREACHED | <other status>
   # Deliberately NOT curl: curl reports 000 for a refused CONNECT, which is the
   # same thing it reports when it could not reach the proxy at all. Speaking the
   # protocol directly separates "the proxy said no" from "nothing was measured".
-  out=$(docker run --rm --network bridge p2-probe:latest python3 -c '
+  docker run --rm --network "$1" "$NEIGHBOUR_IMAGE" python3 -c '
 import socket, sys
 try:
     s = socket.create_connection((sys.argv[1], 3128), 8); s.settimeout(8)
     s.sendall(b"CONNECT github.com:443 HTTP/1.1\r\nHost: github.com\r\n\r\n")
     print(s.recv(128).decode("latin1").split("\r\n")[0].split(" ")[1]); s.close()
-except Exception as e:
+except Exception:
     print("UNREACHED")
-' "$PROXY_BRIDGE_IP" 2>/dev/null | tail -1)
-  if [ "$out" = "403" ]; then
-    ok "a bridge container reaches the proxy but is refused (403) - not an open proxy"
-  elif [ "$out" = "UNREACHED" ]; then
-    ok "a bridge container cannot even reach the proxy port"
-  else
-    bad "any container on bridge can tunnel through the proxy -> $out"
-  fi
+' "$2" 2>/dev/null | tail -1
+}
+PROXY_EGRESS_IP=$(docker inspect "$PROXY" \
+  --format "{{with index .NetworkSettings.Networks \"$EGRESS_NETWORK\"}}{{.IPAddress}}{{end}}" 2>/dev/null)
+if [ -n "$PROXY_EGRESS_IP" ]; then
+  out=$(neighbour_probe "$EGRESS_NETWORK" "$PROXY_EGRESS_IP")
+  case "$out" in
+    403)       ok "a container on $EGRESS_NETWORK reaches the proxy but is refused (403) - not an open proxy" ;;
+    UNREACHED) bad "could not reach the proxy from $EGRESS_NETWORK - the probe measured nothing, so this is not a pass" ;;
+    *)         bad "any container on $EGRESS_NETWORK can tunnel through the proxy -> $out" ;;
+  esac
 else
-  note "could not determine the proxy's bridge IP - open-proxy check skipped"
+  bad "could not determine the proxy's $EGRESS_NETWORK IP - the open-proxy check could not run"
 fi
+# And the default bridge, where the rest of this machine's dev containers live.
+# Under compose the proxy is not attached to it at all, so UNREACHED here is the
+# expected and better answer - but it is worth asserting rather than assuming.
+out=$(neighbour_probe bridge "$PROXY")
+[ "$out" = "UNREACHED" ] \
+  && ok "the default bridge network cannot reach the proxy at all (it is not attached to it)" \
+  || bad "a default-bridge container got '$out' from the proxy - it is exposed beyond its own networks"
 
 echo
 echo "PROXY HARDENING"

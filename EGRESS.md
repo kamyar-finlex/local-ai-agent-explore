@@ -1,5 +1,13 @@
 # Domain-allowlisted egress (TECH-98)
 
+> **Status: this is the prototype record.** The mechanism it describes is now part of
+> the composed stack — see **[COMPOSE.md](COMPOSE.md)**. Two things below are
+> historical and deliberately left as captured: the `p2-*` topology (one stack now,
+> and the probes run inside the real orchestrator), and the four-host allowlist
+> (`api.linear.app` and `codeload.github.com` have since been removed — see
+> [The allowlist](#the-allowlist-determined-empirically)). The reasoning, the bypass
+> analysis and the residual-risk section are unchanged and still apply.
+
 The model-only sandbox in this repo confines an orchestrator to **one** destination
 through a URL-**path** allowlist. TECH-98 needs two more: `api.linear.app` for the
 orchestrator and GitHub for the workers that push branches and open PRs. Both are
@@ -79,7 +87,9 @@ enforcement is the absent route.
    │  CONNECT only · src-pinned   │
    └──────────────┬───────────────┘
                   ▼
-        api.linear.app · github.com · api.github.com · codeload.github.com
+        github.com · api.github.com          (the current list; the prototype
+                                              also allowed api.linear.app and
+                                              codeload.github.com)
 ```
 
 Two gates, two mechanisms, one boundary:
@@ -121,10 +131,19 @@ squid's log for that run — every git operation used one host:
 
 | Host | Needed for | Evidence |
 |---|---|---|
-| `api.linear.app` | Linear GraphQL API | measured: TLS up, HTTP 400 to an unauthenticated `GET /graphql` |
 | `github.com` | **all of git over HTTPS** — clone, fetch, ls-remote, **and push** | measured: shallow clone, full ref listing, and the `git-receive-pack` handshake all tunnel to `github.com:443` and nothing else |
-| `api.github.com` | opening a PR (`gh pr create`, REST/GraphQL) | measured: refused under the narrow list, 200 once allowed. That `gh` uses this host is documentation, not something this prototype exercised end to end — no credentials were used |
-| `codeload.github.com` | tarball/zip downloads (`gh release download`, `pip install git+https` extras) | measured reachable; **not** used by clone or push. Drop it unless something in the fleet needs it |
+| `api.github.com` | issues and labels (planner, dispatcher) and opening a PR (`gh pr create`) — REST and GraphQL | measured: refused under the narrower list, and reachable once allowed (`GET /user` → HTTP 401, i.e. TLS up and GitHub answering, with no credential used) |
+
+**Two hosts is the whole list.** It was three, and briefly four:
+
+| Removed | Why |
+|---|---|
+| `api.linear.app` | The workflow now tracks work as GitHub issues (see `ORCHESTRATOR.md`), so nothing talks to Linear. An allowlist entry nothing needs is a write channel left open for no reason — and, per [Residual risk](#residual-risk), Linear issue descriptions are free text, i.e. a second exfiltration destination. |
+| `codeload.github.com` | Serves tarballs and zips only. Measured **not** used by clone, fetch or push. Nothing in this workflow downloads an archive. |
+
+`verify-egress.sh` checks each removed host is now refused with a `403`, because a
+removal written into the file but never reloaded into squid leaves the old hole open and
+looks exactly like a removal that worked.
 
 **A git push over HTTPS needs `github.com:443` and nothing else.** The commonly
 assumed extras are not involved: packfiles are served by `github.com` itself over
@@ -143,7 +162,7 @@ Deliberately **not** allowlisted, each of which will fail loudly if TECH-98 need
   OAuth-callback-based will not.
 - **Package registries** (npm, PyPI, RubyGems, Gemfury). Workers that install
   dependencies need their own entries. Prefer baking dependencies into the worker
-  image so the allowlist stays at four hosts.
+  image so the allowlist stays at two hosts.
 
 ## Bypasses closed
 
@@ -151,7 +170,7 @@ Deliberately **not** allowlisted, each of which will fail loudly if TECH-98 need
 
 | Rule | Closes |
 |---|---|
-| `deny !agent_net` | squid listens on `0.0.0.0`; without this, every container on the default bridge has a free open proxy. The subnet is generated from the real network by `setup-egress.sh`. |
+| `deny !agent_net` | squid listens on `0.0.0.0`; without this, every container that can reach port 3128 has a free open proxy. The prototype generated the subnet from the live network; the composed stack pins it (`egress-agent-net.conf` + `networks.isolated.ipam`) and the harness asserts the two agree. |
 | `deny ip_literal` | `CONNECT 1.1.1.1:443` — skipping DNS so no `dstdomain` rule can match. Covers IPv4 and IPv6 literals. Also blocks `CONNECT <github-ip>:443`, i.e. github.com's *own* IP: the allowlist is a name check, so a name is required. |
 | `deny !CONNECT` | the proxy fetching a URL on the agent's behalf — including `http://169.254.169.254/…` (cloud metadata) and `http://host.docker.internal:11434/api/pull`. The proxy tunnels or it refuses; it never originates a request. |
 | `deny CONNECT !SSL_ports` | `CONNECT github.com:22` (ssh, hence port forwarding), and `CONNECT host.docker.internal:27017`. Port 443 only. |
@@ -274,8 +293,9 @@ $ docker exec p2-agent curl -s -o /dev/null -w '%{http_code} %{size_request}\n' 
 
 The 404 is irrelevant; the bytes reached GitHub. A gist, an issue comment, a fork, or
 a branch in an attacker's repo are all the same channel with a real destination at the
-end, and `api.linear.app` is a second one (issue descriptions are free-text). The
-same is true of any allowlist entry that accepts writes.
+end. The same is true of any allowlist entry that accepts writes — and `api.github.com`
+is a second one, since an issue body is free text. Removing `api.linear.app` removed a
+third; it did not change the shape of the problem.
 
 So the domain allowlist is not a data-loss control. It is a **blast-radius** control:
 it stops the agent reaching the LAN, host services, cloud metadata, arbitrary IPs,
@@ -352,16 +372,25 @@ errno 101 is a much better artifact than "the connection timed out".
 
 ## Running it
 
+Current, against the composed stack:
+
+```bash
+docker compose up -d                 # see COMPOSE.md
+./verify-egress.sh; echo "exit=$?"   # 45 passed, 0 failed / exit=0
+MODEL_CHAT=1 ./verify-egress.sh      # 46 - adds one real inference call
+```
+
+The standalone prototype, still runnable:
+
 ```bash
 ./setup-egress.sh                    # network, proxy, model gate, worker stand-in
-./verify-egress.sh; echo "exit=$?"   # expect: 40 passed, 0 failed / exit=0
-MODEL_CHAT=1 ./verify-egress.sh      # 41 - adds one real inference call
 ./setup-egress.sh teardown           # removes every p2-* resource
 ```
 
 To change what is reachable, edit `egress-allowed-domains.txt` and
-`docker restart p2-egress-proxy`. The file is the whole policy; the harness reads it
-too, so an added host is checked for reachability and a wildcard entry fails the run.
+`docker compose restart egress-proxy`. The file is the whole policy; the harness reads
+it too, so an added host is checked for reachability, a wildcard entry fails the run,
+and a removed host is checked for being refused.
 
 | File | Purpose |
 |---|---|

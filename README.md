@@ -14,6 +14,8 @@ This PoC treats an **evaluation harness as a first-class deliverable**, alongsid
 sandbox itself. A confinement claim nobody can re-run is a claim, not a result — so
 the boundary is measured from outside the agent, mechanically, on every run.
 
+> ### → **[COMPOSE.md](COMPOSE.md)** — the whole stack as one `docker-compose.yml`: how to bring it up and down, and how each `docker run` flag was proven to survive the translation
+>
 > ### → **[RESULTS.md](RESULTS.md)** — full captured output: **33 checks, 0 failures**
 >
 > ### → **[TESTING.md](TESTING.md)** — reproduce it yourself, step by step
@@ -23,8 +25,12 @@ the boundary is measured from outside the agent, mechanically, on every run.
 > ### → **[MODEL-EVALUATION.md](MODEL-EVALUATION.md)** — which local models can actually orchestrate, and why KV cache decides it
 
 ```bash
-./verify-sandbox.sh; echo "exit=$?"     # RESULT: 33 passed, 0 failed / exit=0
+./verify-sandbox.sh; echo "exit=$?"     # RESULT: 56 passed, 0 failed / exit=0
 ```
+
+(`RESULTS.md` captures the original 33-check run against the single-container sandbox.
+The composed stack adds the COMPOSE TRANSLATION and SPAWN DISPATCHER sections — see
+[COMPOSE.md](COMPOSE.md).)
 
 What the harness insists on, and why each matters:
 
@@ -122,21 +128,27 @@ Requires Docker and Ollama on the host.
 ollama pull gpt-oss:20b
 ollama create gpt-oss:20b-64k -f Modelfile.gpt-oss-64k
 
-# 2. The cage.
-./setup-sandbox.sh
+# 2. Machine-specific values, including the spawn dispatcher's token.
+cp local.env.example local.env   # then set DISPATCH_TOKEN
 
-# 3. Point the agent at the gate (see hermes-config.example.yaml).
+# 3. The cage: internal network, model gate, egress proxy, spawn dispatcher.
+docker compose --profile images build
+./run-hermes.sh
 
 # 4. Prove the boundary holds.
-./verify-sandbox.sh
-
-# 5. Run it.
-./run-hermes.sh
+./verify-sandbox.sh && ./verify-egress.sh && ./verify-spawning.sh dispatcher
 ```
 
-`run-hermes.sh` runs preflight assertions and **refuses to launch** if the network is
-not internal, the gate is missing, or an egress path answers anything but 403. A
-sandbox that silently degrades is worse than none.
+The whole topology is one `docker-compose.yml` — see **[COMPOSE.md](COMPOSE.md)**.
+`run-hermes.sh` is a wrapper that sources `local.env` and sizes the memory cap to the
+live Docker VM; the preflight assertions are a compose service the orchestrator
+`depends_on`, so it **refuses to start** if the network has a route out, the gate is
+missing, or an egress path answers anything but 403. A sandbox that silently degrades is
+worse than none — and putting the preflight in the stack means it cannot be skipped by
+launching some other way.
+
+For the single-container, model-only sandbox that this grew out of, `setup-sandbox.sh`
+is still there and still works.
 
 ## Verifying it
 
@@ -238,27 +250,61 @@ not what is being demonstrated.
 
 ## Adding HTTPS destinations
 
-The gate's path allowlist works only because the model API is plaintext. An agent
-that also needs `api.linear.app` and GitHub cannot be filtered that way — over TLS a
-proxy sees `CONNECT github.com:443` and nothing else. That case needs a second,
-separate mechanism: a **domain** allowlist on a CONNECT proxy, with the `--internal`
-network still the reason it holds.
+The gate's path allowlist works only because the model API is plaintext. An agent that
+also needs GitHub — to clone, to push a branch, to file and read issues, to open a pull
+request — cannot be filtered that way: over TLS a proxy sees `CONNECT github.com:443`
+and nothing else. That case needs a second, separate mechanism: a **domain** allowlist
+on a CONNECT proxy, with the `--internal` network still the reason it holds. Both gates
+are in the composed stack.
 
-> ### → **[EGRESS.md](EGRESS.md)** — the prototype, the empirically determined GitHub
-> allowlist, and `./verify-egress.sh` (**40 checks, 0 failures**, 41 with a live
+The entire reachable internet is two hosts: `github.com` (all of git over HTTPS,
+including push) and `api.github.com` (issues, labels, pull requests).
+
+> ### → **[EGRESS.md](EGRESS.md)** — the design, the empirically determined GitHub
+> allowlist, and `./verify-egress.sh` (**45 checks, 0 failures**, 46 with a live
 > inference call) including the bypass tests
 >
 > It also states plainly what a domain allowlist does *not* buy you: allowing
 > `github.com` so an agent can push branches allows it to push anything, anywhere on
 > `github.com`.
 
+## Planning the work
+
+The sandbox is the substrate; [ORCHESTRATOR.md](ORCHESTRATOR.md) is the contract
+the agents inside it follow. The **planner** is the first of them: one issue
+labelled `spec` goes in, implementation issues come out — each with the sections
+the dispatcher parses, one priority, declared dependencies, and a file list that
+lets concurrent tickets avoid each other.
+
+Its design problem is the model, not the prompt. A 20B model asked for twenty
+fully-formed tickets in one completion produces malformed ones near the end, and
+a failure at ticket 17 loses the first sixteen with it. So planning proceeds one
+ticket per tool call against an append-only ledger, with the ticket *format*
+rendered by a script rather than generated — leaving the model only the judgement
+that is actually its job.
+
+```bash
+./verify-planner.sh; echo "exit=$?"     # RESULT: 45 passed, 0 failed / exit=0
+```
+
+> ### → **[PLANNER.md](PLANNER.md)** — the planning flow, the 18-check validator,
+> and an honest list of what a 20B model will get wrong anyway
+>
+> The harness checks the validator against `ORCHESTRATOR.md` itself, fires every
+> check at a deliberately malformed plan, and refuses to report a clean sweep
+> unless every check has been *made* to fail.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `setup-sandbox.sh` | Creates the internal network and the gate |
+| `docker-compose.yml` | **The whole stack**: internal network, model gate, egress proxy, spawn dispatcher, preflight, orchestrator |
+| `COMPOSE.md` | Bringing it up and down; what changed in the consolidation; measured resource use |
+| `stack-preflight.sh` | Preflight service — refuses to let the orchestrator start into an open cage |
+| `egress-agent-net.conf` | squid's client ACL; must match the pinned subnet in the compose file |
+| `setup-sandbox.sh` | Superseded by compose. Creates the internal network and the gate |
 | `ollama-gate.conf` | nginx allowlist, Host rewrite, rate limits |
-| `run-hermes.sh` | Preflight-checked launcher |
+| `run-hermes.sh` | Wrapper: sources `local.env`, sizes the memory cap to the live VM, `up` + attach |
 | `verify-sandbox.sh` | Host-side boundary verification |
 | `Modelfile.gpt-oss-64k` | Raises served context to 65536 |
 | `hermes-config.example.yaml` | Model wiring — placeholders only, no secrets |
@@ -275,6 +321,12 @@ network still the reason it holds.
 | `egress-proxy.Dockerfile` | alpine + squid, ~21 MB |
 | `egress-probe.Dockerfile` | Worker stand-in: git, curl, python3 |
 | `verify-egress.sh` | Egress verification, including the bypass tests |
+| `ORCHESTRATOR.md` | The contract planner, dispatcher and workers all follow |
+| `bootstrap-labels.sh` | Creates that contract's labels in the target repo |
+| `PLANNER.md` | Planning flow, validator design, expected model failures |
+| `hermes-skills/.../orchestrator-planner/` | The planner skill and its two scripts |
+| `verify-planner.sh` | Planner verification: contract agreement, positive controls |
+| `p3-fixtures/good/` | A conforming plan, as rendered issues, for the validator |
 
 ## Notes
 

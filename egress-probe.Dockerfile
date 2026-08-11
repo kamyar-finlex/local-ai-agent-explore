@@ -4,3 +4,19 @@
 # is open or blocked (see RESULTS.md section 7).
 FROM alpine:3.20
 RUN apk add --no-cache git curl python3 ca-certificates
+
+# The proxy wiring is baked into the IMAGE rather than passed at spawn time.
+# The dispatcher builds every container-create body from a fixed template that
+# contains no Env key at all - which is exactly why it is safe - so a spawned
+# worker inherits nothing from its caller. Without this, a worker can reach the
+# model gate (plaintext, direct) but has no idea the egress proxy exists and
+# every push to GitHub fails with an unhelpful DNS error.
+#
+# This is wiring, not a control: a worker that ignores these variables still has
+# no route anywhere. The enforcement remains the --internal network.
+ENV HTTPS_PROXY=http://hermes-egress-proxy:3128 \
+    https_proxy=http://hermes-egress-proxy:3128 \
+    HTTP_PROXY=http://hermes-egress-proxy:3128 \
+    http_proxy=http://hermes-egress-proxy:3128 \
+    NO_PROXY=ollama-gate,hermes-dispatcher,localhost,127.0.0.1 \
+    no_proxy=ollama-gate,hermes-dispatcher,localhost,127.0.0.1

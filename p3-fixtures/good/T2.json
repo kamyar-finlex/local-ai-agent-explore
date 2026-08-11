@@ -1,0 +1,11 @@
+{
+  "body": "## Goal\nThe package imports cleanly from an installed checkout.\n\n## Files touched\n- src/example/__init__.py\n\n## Details\nCreate src/example/__init__.py exporting __version__ only. No behaviour yet: this ticket exists so later feature tickets have a package to attach to and never have to create it concurrently.\n\n## Acceptance criteria\npython -c \"import example\"\n\n## Blocked-by\n#9001\n",
+  "labels": [
+    "status:backlog",
+    "priority:1"
+  ],
+  "local_id": "T2",
+  "number": 9002,
+  "parent": 7,
+  "title": "Add the package entrypoint module"
+}

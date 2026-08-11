@@ -1,99 +1,84 @@
 #!/usr/bin/env bash
-# Launch Hermes Agent sandboxed: no internet, no LAN, no host services except the
-# local model API via the gate.
+# Bring the composed stack up and attach to the orchestrator.
 #
-#   ./run-hermes.sh [args passed through to the agent]
+#   ./run-hermes.sh            # up + attach
+#   ./run-hermes.sh --no-attach
 #
-# Deliberately absent: -v /var/run/docker.sock. Mounting the Docker socket hands
-# the agent root on the host and voids every boundary below.
+# The topology now lives in docker-compose.yml. This wrapper exists for the two
+# things a compose file cannot do by itself:
+#
+#   1. Source local.env, which is gitignored and holds machine-specific values
+#      (DISPATCH_TOKEN, EXTRA_PORTS, HERMES_DATA). Keeping them out of the repo
+#      is what makes captured output safe to publish without scrubbing.
+#   2. Size the orchestrator's memory cap against the LIVE Docker VM. A cap
+#      larger than the VM is not a cap at all - the container exhausts the VM
+#      before the cgroup ever binds - and compose has no way to read
+#      `docker info`. The compose default is a static floor; this raises it to
+#      fit the machine it is actually running on.
+#
+# The preflight assertions that used to live here are now the `preflight`
+# service, which the orchestrator `depends_on: service_completed_successfully`.
+# That is strictly better: it cannot be skipped by starting the stack some other
+# way, and it tests reachability from inside the cage rather than inspecting
+# configuration from outside it.
+#
+# Deliberately absent, here and in docker-compose.yml: any Docker socket mount
+# on the orchestrator. Mounting it hands the agent root on the host and voids
+# every boundary. Spawning goes through the dispatcher instead.
 
 set -euo pipefail
-
-# Machine-specific values live in local.env, which is gitignored. Sourcing it here
-# keeps private ports and addresses out of the repo and out of captured output, so
-# there is nothing to scrub before publishing.
-HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=/dev/null
-[ -f "$HERE_DIR/local.env" ] && . "$HERE_DIR/local.env"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-NETWORK=hermes-isolated
-GATE=ollama-gate
-NAME=hermes
+cd "$HERE"
 
-# The agent's persistent data directory on the host. Override with HERMES_DATA.
-DATA="${HERMES_DATA:-$HOME/.hermes}"
+ATTACH=1
+[ "${1:-}" = "--no-attach" ] && ATTACH=0
 
-fail() { echo "REFUSING TO LAUNCH: $1" >&2; exit 1; }
+command -v docker >/dev/null || { echo "docker not found" >&2; exit 1; }
 
-# ---- Preflight: refuse to launch if the cage is not actually closed ----------
-# A sandbox that silently degrades is worse than no sandbox, because it is
-# trusted. Assert the boundary every time rather than assuming setup persisted.
+# shellcheck source=/dev/null
+if [ -f "$HERE/local.env" ]; then
+  set -a; . "$HERE/local.env"; set +a
+else
+  echo "no local.env found - copy local.env.example to local.env first" >&2
+  exit 1
+fi
 
-[ -d "$DATA" ] || fail "data directory $DATA does not exist."
-
-[ "$(docker network inspect "$NETWORK" --format '{{.Internal}}' 2>/dev/null)" = "true" ] \
-  || fail "$NETWORK is missing or not --internal; the agent would have egress. Run ./setup-sandbox.sh"
-
-[ -n "$(docker ps -q -f name="^${GATE}$")" ] \
-  || fail "$GATE is not running. Run ./setup-sandbox.sh"
-
-probe() { # method path -> http status, from inside the isolated network
-  docker run --rm --network "$NETWORK" curlimages/curl:latest \
-    -s -m 10 -o /dev/null -w '%{http_code}' -X "$1" "http://${GATE}:11434$2" -d '{}' 2>/dev/null | tail -1
+[ -n "${DISPATCH_TOKEN:-}" ] || {
+  echo "DISPATCH_TOKEN is not set in local.env; the spawn dispatcher refuses to start without one." >&2
+  exit 1
 }
-[ "$(probe POST /api/pull)" = "403" ] \
-  || fail "gate allows /api/pull - an indirect internet egress. Check ollama-gate.conf."
-[ "$(probe GET /api/tags)" = "200" ] \
-  || fail "gate cannot reach the model; the agent would start with nothing to talk to."
 
-# A previous run not started with --rm leaves a stopped container holding the
-# name. Clear that, but never touch a RUNNING one - that would kill a live session.
-if [ -n "$(docker ps -aq -f name="^${NAME}$")" ]; then
-  if [ -n "$(docker ps -q -f name="^${NAME}$")" ]; then
-    fail "a container named '$NAME' is already RUNNING. Attach with 'docker attach $NAME', or stop it first."
-  fi
-  docker rm "$NAME" >/dev/null 2>&1 || true
-  echo "cleared a stopped leftover container named '$NAME'."
-fi
+export HERMES_DATA="${HERMES_DATA:-$HOME/.hermes}"
+[ -d "$HERMES_DATA" ] || { echo "data directory $HERMES_DATA does not exist." >&2; exit 1; }
 
-# A --memory value larger than the Docker VM's own RAM is not a limit at all: the
-# container can consume the whole VM before the cgroup ever binds. On Docker
-# Desktop the VM is often far smaller than the host (measured here: 36 GB host,
-# 7.65 GiB VM), so size the cap against the VM and say so out loud.
-VM_MEM_MB=$(docker info --format '{{.MemTotal}}' 2>/dev/null | awk '{printf "%d", $1/1048576}')
-MEM_LIMIT="${MEM_LIMIT:-}"
-if [ -z "$MEM_LIMIT" ]; then
-  if [ -n "$VM_MEM_MB" ] && [ "$VM_MEM_MB" -gt 0 ] 2>/dev/null; then
-    # Leave ~25% of the VM for the gate, any workers, and the daemon itself.
-    MEM_LIMIT="$(( VM_MEM_MB * 75 / 100 ))m"
+# Size the cap against the VM, not the host. On Docker Desktop the VM is often
+# far smaller than the machine (measured here: 7.65 GiB VM). Leave room for the
+# two gateways, the dispatcher and three 512 MiB workers - about 2 GiB - plus
+# whatever else this VM is already hosting.
+if [ -z "${HERMES_MEM_LIMIT:-}" ]; then
+  VM_MEM_MB=$(docker info --format '{{.MemTotal}}' 2>/dev/null | awk '{printf "%d", $1/1048576}')
+  if [ -n "$VM_MEM_MB" ] && [ "$VM_MEM_MB" -gt 3072 ] 2>/dev/null; then
+    # VM, minus the rest of the stack's committed caps, minus 25% for the daemon
+    # and anything else running in the VM.
+    export HERMES_MEM_LIMIT="$(( (VM_MEM_MB - 2016) * 75 / 100 ))m"
   else
-    MEM_LIMIT="4g"
+    export HERMES_MEM_LIMIT="2g"
   fi
+  echo "orchestrator memory cap: $HERMES_MEM_LIMIT (Docker VM total: ${VM_MEM_MB:-unknown} MiB) - override with HERMES_MEM_LIMIT=..."
 fi
-echo "memory cap: $MEM_LIMIT (Docker VM total: ${VM_MEM_MB:-unknown} MiB) - override with MEM_LIMIT=..."
 
-echo "preflight OK: network internal, gate up, egress paths blocked, model reachable."
+# The worker image must exist before the dispatcher can spawn anything, and
+# nothing else builds it.
+docker image inspect "${WORKER_IMAGE:-hermes-worker:latest}" >/dev/null 2>&1 \
+  || docker compose --profile images build worker-image
 
-exec docker run -it --rm \
-  --name "$NAME" \
-  --network "$NETWORK" \
-  --cap-drop ALL \
-  --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
-  --cap-add DAC_OVERRIDE --cap-add FOWNER \
-  --security-opt no-new-privileges \
-  --memory "$MEM_LIMIT" \
-  --cpus 4 \
-  --pids-limit 512 \
-  --tmpfs /tmp:size=1g \
-  -v "$DATA:/opt/data" \
-  -v "$DATA/hooks:/opt/data/hooks:ro" \
-  nousresearch/hermes-agent "$@"
+echo "bringing the stack up (preflight will refuse if the cage is not closed)..."
+docker compose up -d
 
-# Capability note: bare --cap-drop ALL BREAKS this image. s6-overlay drops
-# privileges during init and dies with
-#   s6-applyuidgid: fatal: unable to set supplementary group list
-# The five caps above are the minimum s6 needs. Critically none is NET_ADMIN, so
-# the container still cannot install a route out of the --internal network.
-#
-# Never add: --cap-add NET_ADMIN, --privileged, -v /var/run/docker.sock,
-# --network bridge, --yolo, or --accept-hooks. Each voids a boundary above.
+docker compose ps
+
+if [ "$ATTACH" = "1" ]; then
+  echo
+  echo "attaching to the orchestrator - detach with Ctrl-P Ctrl-Q, stop with 'docker compose down'"
+  exec docker attach hermes
+fi

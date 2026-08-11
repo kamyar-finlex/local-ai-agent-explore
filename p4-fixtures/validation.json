@@ -1,0 +1,88 @@
+{
+  "_comment": [
+    "Four finished tickets for the validation suite. verify-dispatch.sh builds a",
+    "throwaway git repository with matching branches, so the diff-scope check and",
+    "the acceptance command run for real against real commits.",
+    "  #50 everything correct               -> validation passes (positive control)",
+    "  #51 branch also edits an undeclared file -> diff scope fails",
+    "  #52 acceptance command exits non-zero -> acceptance fails",
+    "  #53 no pull request at all            -> PR check fails"
+  ],
+  "repo": "example/target",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 50,
+      "title": "Well-behaved worker",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Adds the declared file and nothing else.",
+        "",
+        "## Files touched",
+        "- src/good.py",
+        "",
+        "## Acceptance criteria",
+        "test -f src/good.py"
+      ]
+    },
+    {
+      "number": 51,
+      "title": "Worker that wandered outside its file list",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Edits an undeclared file as well.",
+        "",
+        "## Files touched",
+        "- src/scoped.py",
+        "",
+        "## Acceptance criteria",
+        "test -f src/scoped.py"
+      ]
+    },
+    {
+      "number": 52,
+      "title": "Worker whose acceptance command fails",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Opened a PR without the acceptance command passing.",
+        "",
+        "## Files touched",
+        "- src/failing.py",
+        "",
+        "## Acceptance criteria",
+        "test -f src/never_created.py"
+      ]
+    },
+    {
+      "number": 53,
+      "title": "Worker that opened no pull request",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Branch exists, no PR references the issue.",
+        "",
+        "## Files touched",
+        "- src/nopr.py",
+        "",
+        "## Acceptance criteria",
+        "test -f src/nopr.py"
+      ]
+    }
+  ],
+  "comments": {},
+  "pulls": [
+    {"number": 60, "state": "open", "head": "issue-50-good", "base": "main",
+     "title": "Add good", "body": "Closes #50"},
+    {"number": 61, "state": "open", "head": "issue-51-scoped", "base": "main",
+     "title": "Add scoped", "body": "Closes #51"},
+    {"number": 62, "state": "open", "head": "issue-52-failing", "base": "main",
+     "title": "Add failing", "body": "Closes #52"}
+  ]
+}

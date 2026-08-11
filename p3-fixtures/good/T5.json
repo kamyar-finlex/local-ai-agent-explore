@@ -1,0 +1,11 @@
+{
+  "body": "## Goal\nImporting the package yields a router with the store's routes registered.\n\n## Files touched\n- src/example/__init__.py\n- tests/test_smoke.py\n\n## Details\nIn src/example/__init__.py, build the Store and register its three routes on the router, exposing them as example.app. Extend tests/test_smoke.py to assert the three routes dispatch. This is the only ticket allowed to edit both files after their owners are done, which is why it is blocked by both.\n\n## Acceptance criteria\npytest -q tests/test_smoke.py\n\n## Blocked-by\n#9003\n#9004\n",
+  "labels": [
+    "status:backlog",
+    "priority:3"
+  ],
+  "local_id": "T5",
+  "number": 9005,
+  "parent": 7,
+  "title": "Wire the store into the router at startup"
+}

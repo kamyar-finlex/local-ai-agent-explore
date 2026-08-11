@@ -1,0 +1,260 @@
+# The whole sandboxed orchestrator stack, in one file.
+#
+#   set -a; . ./local.env; set +a          # machine-specific values (gitignored)
+#   docker compose --profile images build  # build the worker image once
+#   docker compose up -d                   # bring the stack up
+#   docker attach hermes                   # talk to the orchestrator
+#   docker compose down                    # take it down
+#
+# This replaces setup-sandbox.sh, setup-egress.sh and p1-spawn-setup.sh. Every
+# security property those scripts expressed as a `docker run` flag is expressed
+# here, and ./verify-sandbox.sh asserts each one survived the translation rather
+# than trusting that it did.
+#
+# Two things are deliberately ABSENT from the `hermes` service and must stay
+# absent: a Docker socket mount, and any capability beyond the five s6 needs to
+# boot. Either one voids the boundary. The socket lives on `spawn-dispatcher`,
+# which is what the dispatcher exists for.
+
+name: hermes-stack
+
+# ---------------------------------------------------------------------------
+# Shared hardening. Anchors rather than repetition, so a component cannot drift
+# from the others by accident.
+# ---------------------------------------------------------------------------
+
+# The five capabilities s6-overlay needs to complete init. A bare cap-drop ALL
+# kills this image with "s6-applyuidgid: fatal: unable to set supplementary
+# group list". None of the five is NET_ADMIN, so the container still cannot
+# install a route out of the internal network.
+x-s6-caps: &s6-caps
+  cap_drop: [ALL]
+  cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE, FOWNER]
+
+# The dual-homed components: they touch both sides of the boundary, so they are
+# the hardened ones. ip_forward=0 means they cannot route for anyone who somehow
+# acquires NET_ADMIN; a read-only rootfs means they cannot rewrite their own
+# policy at runtime.
+x-gateway-hardening: &gateway-hardening
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  sysctls: ["net.ipv4.ip_forward=0"]
+  cap_drop: [ALL]
+  cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]
+  restart: unless-stopped
+
+networks:
+  # THE boundary. `internal: true` is `docker network create --internal`: no
+  # gateway, no route anywhere, no outbound DNS. Everything else is defence in
+  # depth. The subnet is pinned because squid's client ACL
+  # (egress-agent-net.conf) is a committed file rather than a generated one, and
+  # the two must agree -- verify-egress.sh checks that they do.
+  isolated:
+    name: hermes-isolated
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/24
+
+  # The outward side of the two gateways, and nothing else. No service that runs
+  # agent-chosen code is ever attached to this.
+  egress:
+    name: hermes-egress
+
+services:
+  # -------------------------------------------------------------------------
+  # Model gate: plaintext HTTP to the local model, filtered by URL PATH.
+  # -------------------------------------------------------------------------
+  ollama-gate:
+    image: nginx:alpine
+    container_name: ollama-gate
+    networks: [isolated, egress]
+    volumes:
+      - ./ollama-gate.conf:/etc/nginx/conf.d/default.conf:ro
+    tmpfs:
+      - /var/cache/nginx:size=16m
+      - /var/run:size=1m
+      - /tmp:size=8m
+    mem_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    # netstat rather than `nc -z`: a probe that OPENS a connection every 5s
+    # writes a junk line into the component's access log, and that log is the
+    # audit trail. This checks the listener without touching it.
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -ltn | grep -q ':11434 '"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    <<: *gateway-hardening
+
+  # -------------------------------------------------------------------------
+  # Egress proxy: TLS tunnels to the internet, filtered by DOMAIN. Path
+  # filtering cannot work here -- over TLS the proxy sees only
+  # "CONNECT github.com:443".
+  # -------------------------------------------------------------------------
+  egress-proxy:
+    build:
+      context: .
+      dockerfile: egress-proxy.Dockerfile
+    image: hermes-egress-proxy:latest
+    container_name: hermes-egress-proxy
+    networks: [isolated, egress]
+    volumes:
+      - ./egress-proxy.conf:/etc/squid/squid.conf:ro
+      - ./egress-allowed-domains.txt:/etc/squid/allowed-domains.txt:ro
+      - ./egress-agent-net.conf:/etc/squid/agent-net.conf:ro
+    tmpfs:
+      - /var/cache/squid:size=16m,mode=1777
+      - /var/log/squid:size=8m,mode=1777
+      - /var/run:size=1m,mode=1777
+    # Measured, not guessed: squid's own RSS is ~166 MiB steady-state after a
+    # verification run, so the prototype's 192m left it at 81% of its cap with
+    # no room for a burst. An OOM-killed proxy takes the egress path down
+    # mid-push. 256m is ~65%.
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
+    # See the note on the gate's healthcheck: an nc probe every 5s writes
+    # "error:transaction-end-before-headers" into squid's access log, which is
+    # the independent record of everything the agent tried to reach.
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -ltn | grep -q ':3128 '"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+    <<: *gateway-hardening
+
+  # -------------------------------------------------------------------------
+  # Spawn dispatcher: OWNS the Docker socket so the orchestrator never has to.
+  # Exposes three verbs behind a bearer token and builds every container-create
+  # body itself, so no caller can smuggle Binds, Privileged, NetworkMode:host
+  # or a socket mount into a worker.
+  #
+  # It is on the isolated network only. Its socket is reachable through this
+  # process and no other path.
+  # -------------------------------------------------------------------------
+  spawn-dispatcher:
+    image: python:3-alpine
+    container_name: hermes-dispatcher
+    networks: [isolated]
+    command: ["python", "/app/dispatcher.py"]
+    volumes:
+      - ./p1-dispatcher.py:/app/dispatcher.py:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      # No default: an empty token makes the dispatcher refuse to start, and a
+      # default one would be a committed credential.
+      DISPATCH_TOKEN: ${DISPATCH_TOKEN:?set DISPATCH_TOKEN in local.env}
+      WORKER_IMAGE: ${WORKER_IMAGE:-hermes-worker:latest}
+      WORKER_LABEL_KEY: role
+      WORKER_LABEL_VALUE: hermes-worker
+      WORKER_NETWORK: hermes-isolated
+      WORKER_NAME_PREFIX: hermes-worker-
+      WORKER_MEMORY: ${WORKER_MEMORY:-536870912}
+      PYTHONDONTWRITEBYTECODE: "1"
+      # Without this the dispatcher's per-request log sits in a stdio buffer and
+      # `docker logs` shows nothing - the spawn audit trail is silently absent,
+      # the same failure mode squid had writing to a root-owned stdout.
+      PYTHONUNBUFFERED: "1"
+    read_only: true
+    tmpfs: ["/tmp:size=8m"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 96m
+    cpus: 0.5
+    pids_limit: 64
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "netstat -ltn | grep -q ':2375 '"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 3s
+
+  # -------------------------------------------------------------------------
+  # Preflight: refuses to let the orchestrator start into a cage that is not
+  # actually closed. This is run-hermes.sh's preflight, moved into the stack so
+  # it cannot be skipped by starting the orchestrator a different way.
+  #
+  # It runs from INSIDE the isolated network with no Docker socket, so it tests
+  # reachability rather than inspecting configuration -- a stronger claim.
+  # -------------------------------------------------------------------------
+  preflight:
+    image: curlimages/curl:latest
+    container_name: hermes-preflight
+    networks: [isolated]
+    entrypoint: ["sh", "/preflight.sh"]
+    volumes:
+      - ./stack-preflight.sh:/preflight.sh:ro
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    mem_limit: 64m
+    pids_limit: 32
+    restart: "no"
+    depends_on:
+      ollama-gate: {condition: service_healthy}
+      egress-proxy: {condition: service_healthy}
+      spawn-dispatcher: {condition: service_healthy}
+
+  # -------------------------------------------------------------------------
+  # The orchestrator. Isolated network only. NO DOCKER SOCKET.
+  # -------------------------------------------------------------------------
+  hermes:
+    image: nousresearch/hermes-agent
+    container_name: hermes
+    networks: [isolated]
+    depends_on:
+      preflight: {condition: service_completed_successfully}
+    environment:
+      # Convenience for well-behaved clients, not a control: the enforcement is
+      # the absent route. NO_PROXY keeps model traffic off the egress proxy,
+      # which is CONNECT-only and would refuse it.
+      HTTPS_PROXY: http://hermes-egress-proxy:3128
+      https_proxy: http://hermes-egress-proxy:3128
+      HTTP_PROXY: http://hermes-egress-proxy:3128
+      http_proxy: http://hermes-egress-proxy:3128
+      NO_PROXY: ollama-gate,hermes-dispatcher,localhost,127.0.0.1
+      no_proxy: ollama-gate,hermes-dispatcher,localhost,127.0.0.1
+    volumes:
+      # The agent's persistent data. Writable by necessity - it is how the agent
+      # persists skills and memory. Keep it under git and review the diffs.
+      - ${HERMES_DATA:-${HOME}/.hermes}:/opt/data
+      - ${HERMES_DATA:-${HOME}/.hermes}/hooks:/opt/data/hooks:ro
+    tmpfs: ["/tmp:size=1g"]
+    # A limit larger than the Docker VM's own RAM is not a limit: the container
+    # can consume the whole VM before the cgroup binds. The budget this default
+    # closes, against a measured 7.65 GiB VM:
+    #
+    #   hermes 2048 + gate 128 + proxy 256 + dispatcher 96 + 3 workers 1536
+    #     = 4064 MiB committed, leaving ~3.6 GiB for the daemon and anything
+    #       else already running in the VM.
+    #
+    # Measured actual use is far below that (see COMPOSE.md), but the caps are
+    # what the VM must be able to honour in the worst case, so the arithmetic
+    # has to close before the measurements are reassuring.
+    mem_limit: ${HERMES_MEM_LIMIT:-2g}
+    cpus: ${HERMES_CPUS:-4}
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    stdin_open: true
+    tty: true
+    <<: *s6-caps
+
+  # -------------------------------------------------------------------------
+  # Build-only: the image the dispatcher spawns workers from. Never started by
+  # `up` - it exists so the image is built from this file rather than by hand.
+  #
+  #   docker compose --profile images build worker-image
+  # -------------------------------------------------------------------------
+  worker-image:
+    build:
+      context: .
+      dockerfile: egress-probe.Dockerfile
+    image: hermes-worker:latest
+    profiles: ["images"]
+    command: ["true"]

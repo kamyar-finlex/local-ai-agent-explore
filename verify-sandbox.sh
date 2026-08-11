@@ -10,6 +10,12 @@
 #
 # Add your own host services to check with EXTRA_PORTS, e.g.
 #   EXTRA_PORTS="8080 9000" ./verify-sandbox.sh
+#
+# Runs against the COMPOSED stack (docker-compose.yml). The names below are the
+# compose container_names; the checks themselves are unchanged from the script-
+# based topology, plus a COMPOSE TRANSLATION section that asserts every property
+# that used to be a `docker run` flag is still set on the running container.
+# Translating a sandbox is exactly the moment a flag goes missing silently.
 
 set -uo pipefail
 
@@ -19,9 +25,11 @@ set -uo pipefail
 HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 [ -f "$HERE_DIR/local.env" ] && . "$HERE_DIR/local.env"
-NETWORK=hermes-isolated
-GATE=ollama-gate
-NAME=hermes
+NETWORK="${ISOLATED_NETWORK:-hermes-isolated}"
+GATE="${GATE_NAME:-ollama-gate}"
+NAME="${AGENT_NAME:-hermes}"
+DISPATCHER="${DISPATCHER_NAME:-hermes-dispatcher}"
+PROXY="${PROXY_NAME:-hermes-egress-proxy}"
 
 # Common local dev infrastructure that an escaped agent would find interesting.
 DEFAULT_PORTS="27017:MongoDB 3306:MySQL 5432:PostgreSQL 6379:Redis 4566:LocalStack"
@@ -114,10 +122,123 @@ if [ -n "$(docker ps -q -f name="^${NAME}$")" ]; then
     && ok "$NAME not privileged" || bad "$NAME is PRIVILEGED"
   docker inspect "$NAME" --format '{{range .Mounts}}{{.Source}} {{end}}' | grep -q "docker.sock" \
     && bad "docker.sock is MOUNTED - the agent has host root" || ok "no docker.sock mounted"
-  docker inspect "$NAME" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' | grep -qw bridge \
-    && bad "$NAME is on bridge - full host and internet access" || ok "$NAME only on $NETWORK"
+  # Was "not on bridge". Under compose the agent is on no bridge network at all,
+  # so assert the stronger property directly: exactly one network, the internal
+  # one. That also catches a second network being added later.
+  agent_nets=$(docker inspect "$NAME" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}')
+  if [ "$(echo "$agent_nets" | wc -w)" -eq 1 ] && echo "$agent_nets" | grep -qw "$NETWORK"; then
+    ok "$NAME is on $NETWORK and nothing else"
+  else
+    bad "$NAME is on: $agent_nets - expected only $NETWORK"
+  fi
 else
   note "$NAME is not running - privilege checks skipped"
+fi
+
+echo
+echo "COMPOSE TRANSLATION  (every property that used to be a docker run flag)"
+# The consolidation risk is not that a boundary was argued away, it is that a
+# flag silently did not survive being rewritten as YAML. Each check below names
+# the flag it replaces.
+if [ -n "$(docker ps -q -f name="^${NAME}$")" ]; then
+  # --cap-drop ALL --cap-add CHOWN,SETUID,SETGID,DAC_OVERRIDE,FOWNER
+  # Exact set, sorted: a superset is a silent privilege grant, a subset breaks
+  # s6 init ("unable to set supplementary group list") and the agent never boots.
+  want="CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETGID CAP_SETUID"
+  got=$(docker inspect "$NAME" --format '{{range .HostConfig.CapAdd}}{{.}} {{end}}' \
+        | tr ' ' '\n' | sed '/^$/d' | sort | tr '\n' ' ' | sed 's/ $//')
+  [ "$(docker inspect "$NAME" --format '{{.HostConfig.CapDrop}}')" = "[ALL]" ] \
+    && ok "$NAME cap_drop is exactly ALL" || bad "$NAME cap_drop is not ALL"
+  [ "$got" = "$want" ] && ok "$NAME cap_add is exactly the 5 caps s6 needs ($got)" \
+                       || bad "$NAME cap_add is '$got', expected '$want'"
+  # --security-opt no-new-privileges
+  docker inspect "$NAME" --format '{{.HostConfig.SecurityOpt}}' | grep -q 'no-new-privileges' \
+    && ok "$NAME has no-new-privileges" || bad "$NAME is MISSING no-new-privileges"
+  # --memory / --cpus / --pids-limit. Zero means "no limit", which is what an
+  # unset compose key looks like - indistinguishable from a limit at inspect
+  # time unless it is checked for being non-zero.
+  m=$(docker inspect "$NAME" --format '{{.HostConfig.Memory}}')
+  c=$(docker inspect "$NAME" --format '{{.HostConfig.NanoCpus}}')
+  p=$(docker inspect "$NAME" --format '{{.HostConfig.PidsLimit}}')
+  [ "${m:-0}" -gt 0 ] 2>/dev/null && ok "$NAME memory capped ($((m/1048576)) MiB)" || bad "$NAME has NO memory limit"
+  [ "${c:-0}" -gt 0 ] 2>/dev/null && ok "$NAME cpus capped ($((c/1000000000)) cpus)" || bad "$NAME has NO cpu limit"
+  [ "${p:-0}" -gt 0 ] 2>/dev/null && ok "$NAME pids capped ($p)" || bad "$NAME has NO pids limit"
+  # A memory cap larger than the Docker VM itself is not a cap: the container
+  # exhausts the VM before the cgroup ever binds.
+  vm=$(docker info --format '{{.MemTotal}}' 2>/dev/null)
+  if [ "${m:-0}" -gt 0 ] && [ "${vm:-0}" -gt 0 ] 2>/dev/null; then
+    [ "$m" -lt "$vm" ] && ok "$NAME memory cap is below the Docker VM total ($((vm/1048576)) MiB)" \
+                       || bad "$NAME memory cap ($((m/1048576)) MiB) >= VM total ($((vm/1048576)) MiB) - not a cap"
+  fi
+  # Per-container caps that each fit the VM can still not fit TOGETHER. That is
+  # the failure the consolidation makes possible: five services plus three
+  # workers now share one VM, where each prototype had it to itself. Worker caps
+  # come from the dispatcher's own configuration, so this tracks the real
+  # worst case rather than an assumption about it.
+  wmem=$(docker inspect "$DISPATCHER" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+         | sed -n 's/^WORKER_MEMORY=//p' | head -1)
+  wmem="${wmem:-536870912}"
+  total=$m
+  for svc in "$GATE" "$PROXY" "$DISPATCHER"; do
+    sm=$(docker inspect "$svc" --format '{{.HostConfig.Memory}}' 2>/dev/null || echo 0)
+    total=$(( total + ${sm:-0} ))
+  done
+  total=$(( total + 3 * wmem ))
+  if [ "${vm:-0}" -gt 0 ] 2>/dev/null; then
+    [ "$total" -lt "$vm" ] \
+      && ok "whole stack + 3 workers commits $((total/1048576)) MiB of the VM's $((vm/1048576)) MiB" \
+      || bad "committed caps total $((total/1048576)) MiB > VM $((vm/1048576)) MiB - the stack cannot all be resident"
+  fi
+  # --tmpfs /tmp
+  docker inspect "$NAME" --format '{{.HostConfig.Tmpfs}}' | grep -q '/tmp' \
+    && ok "$NAME /tmp is a tmpfs (not written into the data mount)" || bad "$NAME has no /tmp tmpfs"
+  # -v "$DATA/hooks:/opt/data/hooks:ro"
+  docker inspect "$NAME" --format '{{range .Mounts}}{{.Destination}}:{{.RW}} {{end}}' \
+    | grep -q '/opt/data/hooks:false' \
+    && ok "$NAME hooks directory mounted read-only" || bad "$NAME hooks directory is WRITABLE"
+else
+  note "$NAME is not running - compose translation checks skipped"
+fi
+
+# The gate and the proxy are the dual-homed components; the same flags must have
+# survived for them. Their read-only/ip_forward checks are above and in
+# verify-egress.sh; these are the limits.
+for svc in "$GATE" "$PROXY"; do
+  [ -n "$(docker ps -q -f name="^${svc}$")" ] || { note "$svc not running - skipped"; continue; }
+  m=$(docker inspect "$svc" --format '{{.HostConfig.Memory}}')
+  p=$(docker inspect "$svc" --format '{{.HostConfig.PidsLimit}}')
+  [ "${m:-0}" -gt 0 ] 2>/dev/null && [ "${p:-0}" -gt 0 ] 2>/dev/null \
+    && ok "$svc memory and pids capped ($((m/1048576)) MiB, $p pids)" \
+    || bad "$svc is missing a memory or pids limit"
+  docker inspect "$svc" --format '{{.HostConfig.SecurityOpt}}' | grep -q 'no-new-privileges' \
+    && ok "$svc has no-new-privileges" || bad "$svc is MISSING no-new-privileges"
+  docker inspect "$svc" --format '{{range .Mounts}}{{.Source}} {{end}}' | grep -q 'docker.sock' \
+    && bad "$svc has the Docker socket mounted - it must not" || ok "$svc has no Docker socket"
+done
+
+echo
+echo "SPAWN DISPATCHER  (owns the socket so the orchestrator never has to)"
+if [ -n "$(docker ps -q -f name="^${DISPATCHER}$")" ]; then
+  docker inspect "$DISPATCHER" --format '{{range .Mounts}}{{.Source}} {{end}}' | grep -q 'docker.sock' \
+    && ok "$DISPATCHER holds the Docker socket (by design - it is the only one that may)" \
+    || bad "$DISPATCHER has no Docker socket - it cannot spawn anything"
+  d_nets=$(docker inspect "$DISPATCHER" --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}')
+  if [ "$(echo "$d_nets" | wc -w)" -eq 1 ] && echo "$d_nets" | grep -qw "$NETWORK"; then
+    ok "$DISPATCHER is on $NETWORK only (its socket is not exposed to any routed network)"
+  else
+    bad "$DISPATCHER is on: $d_nets - a socket holder must not be dual-homed"
+  fi
+  [ "$(docker inspect "$DISPATCHER" --format '{{.HostConfig.ReadonlyRootfs}}')" = "true" ] \
+    && ok "$DISPATCHER rootfs read-only" || bad "$DISPATCHER rootfs writable"
+  docker inspect "$DISPATCHER" --format '{{.HostConfig.SecurityOpt}}' | grep -q 'no-new-privileges' \
+    && ok "$DISPATCHER has no-new-privileges" || bad "$DISPATCHER is MISSING no-new-privileges"
+  # It must not publish its port to the host: the whole point is that only the
+  # isolated network can reach the verb interface.
+  [ "$(docker inspect "$DISPATCHER" --format '{{len .HostConfig.PortBindings}}')" = "0" ] \
+    && ok "$DISPATCHER publishes no port to the host" \
+    || bad "$DISPATCHER publishes a port to the host - the socket interface is exposed"
+else
+  note "$DISPATCHER is not running - spawn checks skipped (see ./verify-spawning.sh)"
 fi
 
 echo
@@ -129,8 +250,13 @@ echo "DIRECT PROBES INSIDE THE REAL AGENT CONTAINER"
 if [ -n "$(docker ps -q -f name="^${NAME}$")" ]; then
   # Direct IP as well as a hostname: proves there is no ROUTE, not merely that
   # DNS is unavailable. A DNS-only failure would be a much weaker result.
-  code=$(docker exec "$NAME" curl -s -m 8 -o /dev/null -w '%{http_code}' https://1.1.1.1 2>/dev/null)
-  [ "${code:-000}" = "000" ] && ok "agent cannot reach 1.1.1.1 by direct IP (no route)" \
+  #
+  # --noproxy '*' is load-bearing now that the composed orchestrator carries
+  # HTTPS_PROXY. Without it curl would go to the egress proxy, be refused there,
+  # and still report 000 - the check would pass while measuring the allowlist
+  # instead of the absent route. The two must stay separately verifiable.
+  code=$(docker exec "$NAME" curl -s -m 8 --noproxy '*' -o /dev/null -w '%{http_code}' https://1.1.1.1 2>/dev/null)
+  [ "${code:-000}" = "000" ] && ok "agent cannot reach 1.1.1.1 by direct IP (no route, proxy bypassed)" \
                              || bad "agent reached 1.1.1.1 -> HTTP $code"
   docker exec "$NAME" getent hosts example.com >/dev/null 2>&1 \
     && bad "agent CAN resolve public DNS" || ok "agent cannot resolve public DNS"
@@ -148,12 +274,13 @@ if [ -n "$(docker ps -q -f name="^${NAME}$")" ]; then
   probe_out=$(docker exec "$NAME" python3 -c '
 import socket, sys
 host_ip = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] else None
+gate = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else "ollama-gate"
 targets = [("host.docker.internal", 27017, "MongoDB via host.docker.internal")]
 if host_ip:
     targets += [(host_ip, 27017, "MongoDB via host LAN IP"),
                 (host_ip, 3306,  "MySQL via host LAN IP"),
                 (host_ip, 4566,  "LocalStack via host LAN IP")]
-targets += [("ollama-gate", 11434, "CONTROL gate")]
+targets += [(gate, 11434, "CONTROL gate")]
 for h, p, label in targets:
     try:
         s = socket.socket(); s.settimeout(4)
@@ -161,7 +288,7 @@ for h, p, label in targets:
         print("%s|%s" % (label, "OPEN" if rc == 0 else "SHUT"))
     except Exception as e:
         print("%s|SHUT" % label)
-' "$HOST_IP" 2>/dev/null)
+' "$HOST_IP" "$GATE" 2>/dev/null)
 
   [ -n "$HOST_IP" ] || note "could not detect host LAN IP; set HOST_IP=... for a route-level probe"
   while IFS='|' read -r label state; do
@@ -178,7 +305,7 @@ for h, p, label in targets:
 $probe_out
 EOF
 
-  code=$(docker exec "$NAME" curl -s -m 8 -o /dev/null -w '%{http_code}' \
+  code=$(docker exec "$NAME" curl -s -m 8 --noproxy '*' -o /dev/null -w '%{http_code}' \
          -X POST "http://${GATE}:11434/api/pull" -d '{"model":"llama3"}' 2>/dev/null)
   [ "$code" = "403" ] && ok "agent blocked from /api/pull (403)" \
                       || bad "agent got $code from /api/pull, expected 403"
@@ -188,7 +315,7 @@ EOF
     || ok "host home directory not present inside the agent"
 
   # The permitted hole must still work, or the sandbox is merely broken.
-  code=$(docker exec "$NAME" curl -s -m 240 -o /dev/null -w '%{http_code}' \
+  code=$(docker exec "$NAME" curl -s -m 240 --noproxy '*' -o /dev/null -w '%{http_code}' \
          -X POST "http://${GATE}:11434/v1/chat/completions" \
          -H 'Content-Type: application/json' \
          -d '{"model":"'"${MODEL:-gpt-oss:20b-64k}"'","messages":[{"role":"user","content":"hi"}],"max_tokens":512}' 2>/dev/null)

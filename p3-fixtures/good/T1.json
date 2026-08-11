@@ -1,0 +1,11 @@
+{
+  "body": "## Goal\nThe repository installs and runs an empty test suite.\n\n## Files touched\n- pyproject.toml\n- tests/test_smoke.py\n\n## Details\nCreate pyproject.toml declaring the package name, the src layout and pytest as the only dev dependency, per the Setup section of the README. Add tests/test_smoke.py containing one test that asserts True, so the runner is proven before any feature depends on it.\n\n## Acceptance criteria\npytest -q tests/test_smoke.py\n",
+  "labels": [
+    "status:backlog",
+    "priority:1"
+  ],
+  "local_id": "T1",
+  "number": 9001,
+  "parent": 7,
+  "title": "Create the package skeleton and test runner"
+}

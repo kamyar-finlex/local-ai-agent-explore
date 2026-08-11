@@ -1,0 +1,11 @@
+{
+  "body": "## Goal\nThe service maps HTTP paths to handler callables.\n\n## Files touched\n- src/example/api.py\n- tests/test_api.py\n\n## Details\nImplement the router described under HTTP surface in the README: register(method, path, handler) and dispatch(method, path) returning 404 for an unknown route. Do not import the store here; wiring happens in a later ticket so this file has exactly one owner.\n\n## Acceptance criteria\npytest -q tests/test_api.py\n\n## Blocked-by\n#9002\n",
+  "labels": [
+    "status:backlog",
+    "priority:2"
+  ],
+  "local_id": "T4",
+  "number": 9004,
+  "parent": 7,
+  "title": "Implement the HTTP request router"
+}

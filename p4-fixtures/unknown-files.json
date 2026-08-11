@@ -1,0 +1,44 @@
+{
+  "_comment": [
+    "A ticket is in-progress but declares no files - only reachable if a human",
+    "hand-labelled it, since the dispatcher refuses to claim a ticket without a",
+    "file list. Disjointness is then unprovable, so the pass must fail CLOSED:",
+    "nothing is dispatched and the reason is reported. #41 would otherwise be",
+    "trivially ready, which is what makes the refusal meaningful."
+  ],
+  "repo": "example/target",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 40,
+      "title": "Hand-labelled in-progress, no file list",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Somebody dragged this into in-progress by hand.",
+        "",
+        "## Acceptance criteria",
+        "pytest -q"
+      ]
+    },
+    {
+      "number": 41,
+      "title": "Otherwise perfectly ready",
+      "state": "open",
+      "labels": ["status:todo", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Ready in every respect except that the pass is unsafe.",
+        "",
+        "## Files touched",
+        "- src/ready.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_ready.py -q"
+      ]
+    }
+  ],
+  "comments": {},
+  "pulls": []
+}

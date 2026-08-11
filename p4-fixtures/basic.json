@@ -1,0 +1,380 @@
+{
+  "_comment": [
+    "Fixture repository state for verify-dispatch.sh. Every scheduling rule in",
+    "ORCHESTRATOR.md 'Dispatch rules' has at least one issue here that exercises",
+    "it, and at least one issue that must be dispatched, so a run in which",
+    "nothing is dispatched fails the positive control instead of looking clean.",
+    "Nothing here is real: the repo name, the paths and the commands are invented."
+  ],
+  "repo": "example/target",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 1,
+      "title": "Create the package skeleton",
+      "state": "closed",
+      "labels": ["status:done", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "A importable package with a smoke test.",
+        "",
+        "## Files touched",
+        "- src/foundation.py",
+        "- tests/test_foundation.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_foundation.py -q"
+      ]
+    },
+    {
+      "number": 2,
+      "title": "Add the API module",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "An API module with tests.",
+        "",
+        "## Files touched",
+        "- src/api.py",
+        "- tests/test_api.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_api.py -q"
+      ]
+    },
+    {
+      "number": 3,
+      "title": "Render the report (blocked by an OPEN issue)",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Render a report from stored records.",
+        "",
+        "## Files touched",
+        "- src/report.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_report.py -q",
+        "",
+        "## Blocked-by",
+        "#4"
+      ]
+    },
+    {
+      "number": 4,
+      "title": "Export records (never approved)",
+      "state": "open",
+      "labels": ["status:backlog", "priority:3"],
+      "body_lines": [
+        "## Goal",
+        "Write records out as CSV.",
+        "",
+        "## Files touched",
+        "- src/export.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_export.py -q"
+      ]
+    },
+    {
+      "number": 5,
+      "title": "Add the store (blocker #1 is CLOSED)",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Persist records.",
+        "",
+        "## Files touched",
+        "- src/store.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_store.py -q",
+        "",
+        "## Blocked-by",
+        "#1",
+        "#26"
+      ]
+    },
+    {
+      "number": 6,
+      "title": "Second change to the API module (shares a file with #2)",
+      "state": "open",
+      "labels": ["status:todo", "priority:3"],
+      "body_lines": [
+        "## Goal",
+        "Add pagination to the API module.",
+        "",
+        "## Files touched",
+        "- src/api.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_api_pagination.py -q"
+      ]
+    },
+    {
+      "number": 7,
+      "title": "Add the CLI (disjoint from every other ready ticket)",
+      "state": "open",
+      "labels": ["status:todo", "priority:3"],
+      "body_lines": [
+        "## Goal",
+        "A command line entry point.",
+        "",
+        "## Files touched",
+        "- src/cli.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_cli.py -q"
+      ]
+    },
+    {
+      "number": 8,
+      "title": "Ticket with a prose acceptance criterion",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Something unverifiable.",
+        "",
+        "## Files touched",
+        "- src/prose.py",
+        "",
+        "## Acceptance criteria",
+        "Run the test suite and check that everything passes."
+      ]
+    },
+    {
+      "number": 9,
+      "title": "Ticket with no file list",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Unschedulable: nothing declares what it touches.",
+        "",
+        "## Acceptance criteria",
+        "pytest -q"
+      ]
+    },
+    {
+      "number": 10,
+      "title": "Cycle member A",
+      "state": "open",
+      "labels": ["status:todo", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Half of a dependency cycle.",
+        "",
+        "## Files touched",
+        "- src/cycle_a.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_cycle_a.py -q",
+        "",
+        "## Blocked-by",
+        "#11"
+      ]
+    },
+    {
+      "number": 11,
+      "title": "Cycle member B",
+      "state": "open",
+      "labels": ["status:todo", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "The other half of the cycle.",
+        "",
+        "## Files touched",
+        "- src/cycle_b.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_cycle_b.py -q",
+        "",
+        "## Blocked-by",
+        "#10"
+      ]
+    },
+    {
+      "number": 12,
+      "title": "Already claimed by a live worker",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Held work, with a fresh claim comment.",
+        "",
+        "## Files touched",
+        "- src/held.py",
+        "- tests/test_held.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_held.py -q"
+      ]
+    },
+    {
+      "number": 13,
+      "title": "Wants a file an in-progress ticket holds",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Collides with the running worker on #12.",
+        "",
+        "## Files touched",
+        "- src/held.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_held_extra.py -q"
+      ]
+    },
+    {
+      "number": 14,
+      "title": "Restructure the docs directory",
+      "state": "open",
+      "labels": ["status:todo", "priority:4"],
+      "body_lines": [
+        "## Goal",
+        "Declares a directory rather than a file.",
+        "",
+        "## Files touched",
+        "- docs/",
+        "",
+        "## Acceptance criteria",
+        "test -d docs"
+      ]
+    },
+    {
+      "number": 15,
+      "title": "Edit one file inside that docs directory",
+      "state": "open",
+      "labels": ["status:todo", "priority:4"],
+      "body_lines": [
+        "## Goal",
+        "Contained by #14's declared directory.",
+        "",
+        "## Files touched",
+        "- docs/guide.md",
+        "",
+        "## Acceptance criteria",
+        "test -f docs/guide.md"
+      ]
+    },
+    {
+      "number": 16,
+      "title": "Highest priority ready ticket",
+      "state": "open",
+      "labels": ["status:todo", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Must be dispatched before every priority:2 ticket.",
+        "",
+        "## Files touched",
+        "- src/first.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_first.py -q"
+      ]
+    },
+    {
+      "number": 17,
+      "title": "Touches src/casefold/App.py",
+      "state": "open",
+      "labels": ["status:todo", "priority:3"],
+      "body_lines": [
+        "## Goal",
+        "Case-only difference against #18.",
+        "",
+        "## Files touched",
+        "- src/casefold/App.py",
+        "",
+        "## Acceptance criteria",
+        "test -f src/casefold/App.py"
+      ]
+    },
+    {
+      "number": 18,
+      "title": "Touches src/casefold/app.py",
+      "state": "open",
+      "labels": ["status:todo", "priority:3"],
+      "body_lines": [
+        "## Goal",
+        "Same file as #17 on a case-insensitive filesystem.",
+        "",
+        "## Files touched",
+        "- src/casefold/app.py",
+        "",
+        "## Acceptance criteria",
+        "test -f src/casefold/app.py"
+      ]
+    },
+    {
+      "number": 19,
+      "title": "Ticket that lists itself as a blocker",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Deadlocked on itself.",
+        "",
+        "## Files touched",
+        "- src/self.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_self.py -q",
+        "",
+        "## Blocked-by",
+        "#19"
+      ]
+    },
+    {
+      "number": 26,
+      "title": "Second finished foundation ticket",
+      "state": "closed",
+      "labels": ["status:done", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Closed. #5 lists it alongside #1, so #5 needs BOTH closed.",
+        "",
+        "## Files touched",
+        "- src/foundation2.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_foundation2.py -q"
+      ]
+    },
+    {
+      "number": 27,
+      "title": "One blocker closed, one still open",
+      "state": "open",
+      "labels": ["status:todo", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Proves that SOME blockers closed is not enough.",
+        "",
+        "## Files touched",
+        "- src/partial.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_partial.py -q",
+        "",
+        "## Blocked-by",
+        "#1",
+        "#4"
+      ]
+    }
+  ],
+  "comments": {
+    "12": [
+      {
+        "id": 5001,
+        "created_at": "2026-01-01T11:50:00Z",
+        "user": "p4-dispatcher",
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-earlier\",\"issue\":12,\"nonce\":\"aaaa0000aaaa0000\",\"worker\":\"p1-p4w-12\"} -->\nClaimed by the dispatcher for worker `p1-p4w-12`."
+      }
+    ]
+  },
+  "pulls": []
+}

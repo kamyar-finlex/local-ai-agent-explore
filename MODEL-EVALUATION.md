@@ -13,7 +13,7 @@ that clearing it is necessary but nowhere near sufficient.
 | Serves ≥64K | **yes** — 65536 | **yes** — 65536 |
 | Tool calling | yes | yes |
 | Resident at 64K | **25.07 GB** | ~14.9 GB |
-| Concurrent agents | **1** | ~3 (fits; needs config) |
+| Concurrent agents | **1** | **3** — measured, 16.46 GiB at 3 × 64K slots |
 | Recommended | **no** | **yes** |
 
 **Devstral Small 2 is not viable as a local orchestrator on this hardware** — and the
@@ -95,7 +95,7 @@ Same 65536 window, same measurement method:
 | **KV @ 65536** | **10240.00 MiB** | **1536 + 18 MiB** |
 | Geometry | 40 layers, head_dim 128 | 12 non-SWA layers, head_dim 64, + 768-cell SWA |
 | Total @ 1 slot | 25.07 GB | ~14.9 GB |
-| Total @ 3 slots | ~43 GiB — impossible | ~16.7 GiB — fits, ~10 GB spare |
+| Total @ 3 slots | ~43 GiB — impossible | **16.46 GiB measured** — fits, ~8.7 GiB spare |
 
 gpt-oss uses **interleaved sliding-window attention**: only 12 layers carry a full KV
 cache, and the head dimension is half. Three 64K slots fit comfortably under the
@@ -119,6 +119,83 @@ ps eww -o command= -p "$(pgrep -f 'ollama serve')" | tr ' ' '\n' | grep ^OLLAMA
 If the variable is absent there, it is not in effect no matter what `launchctl getenv`
 reports. This is the same trap that made `OLLAMA_CONTEXT_LENGTH` look like it was
 being ignored.
+
+### Measured: it does stick, and three 64K slots do fit
+
+What worked, in order — the restart is the load-bearing step:
+
+```bash
+launchctl setenv OLLAMA_NUM_PARALLEL 3
+# quit Ollama COMPLETELY, then relaunch so it inherits launchd's new environment
+pkill -f '/Applications/Ollama.app/Contents/MacOS/Ollama'
+open -a Ollama
+ps eww -o command= -p "$(pgrep -f 'ollama serve')" | tr ' ' '\n' | grep ^OLLAMA
+#   OLLAMA_NO_CLOUD=0
+#   OLLAMA_NUM_PARALLEL=3        <-- now in the server's own environment
+#   OLLAMA_MODELS=...
+#   OLLAMA_CONTEXT_LENGTH=65536
+```
+
+`OLLAMA_CONTEXT_LENGTH` appearing there is the earlier finding closing: it had been set
+by `launchctl setenv` long before and had never been inherited. Same variable, same
+`launchctl getenv` output, and only now in effect.
+
+**Three slots, at the full window**, from the runner log:
+
+```
+srv    load_model: initializing, n_slots = 3, n_ctx_slot = 65536, kv_unified = 'false'
+slot   load_model: id  0 | task -1 | new slot, n_ctx = 65536
+slot   load_model: id  1 | task -1 | new slot, n_ctx = 65536
+slot   load_model: id  2 | task -1 | new slot, n_ctx = 65536
+```
+
+Allocation, `gpt-oss:20b-64k`, measured at 1 slot and at 3:
+
+| Buffer | 1 slot | 3 slots |
+|---|---|---|
+| Model weights (Metal) | 12 036.67 MiB | 12 036.67 MiB |
+| KV, non-SWA (65 536 cells, 12 layers) | 1 536.00 MiB | **4 608.00 MiB** (3/3 seqs) |
+| KV, SWA (768 cells) | 18.00 MiB | 54.00 MiB |
+| Compute buffer (Metal) | 143.77 MiB | 154.84 MiB |
+| **Total Metal** | **13 734 MiB = 13.41 GiB** | **16 854 MiB = 16.46 GiB** |
+
+Two extra slots cost **3 119 MiB** — within 11 MiB of the 2 × (1536 + 18) MiB this
+document predicted from the KV geometry. Against the ~27 GB (25.1 GiB) Metal ceiling
+that is 66% used, with ~8.7 GiB spare. Devstral could not have done this: two of its
+slots alone would have been 20 GiB of KV.
+
+**`/api/ps` under-reports once `num_parallel > 1`.** It reported 12.84 GB while the
+runner had allocated 16.46 GiB of Metal buffers. At one slot the two agreed (as they did
+for Devstral). Read the runner log, not `/api/ps`, when sizing for concurrency.
+
+### Throughput: 1 slot vs 3
+
+Same model, same 192-token completions, distinct short prompts so each request would
+take its own slot if one existed:
+
+| Concurrency | 1 slot — batch wall | 1 slot — per-request | 3 slots — batch wall | 3 slots — per-request |
+|---|---|---|---|---|
+| 1 | 6.0 s generating | 31.8 tok/s | 6.1 s generating | 31.7 tok/s |
+| 2 | 13.38 s | 31.4 / 31.8 tok/s | **8.71 s** | 25.0 / 25.0 tok/s |
+| 3 | 19.38 s | 32.0 / 31.3 / 31.6 tok/s | **10.96 s** | 19.7 / 19.7 / 19.7 tok/s |
+
+The shape of the result is the point. At one slot, per-request speed never degrades and
+latency stacks linearly — 7 s, 14 s, 21 s — exactly the Devstral pattern. At three
+slots the requests run genuinely concurrently: all three finish **together**, each at
+19.7 tok/s instead of 31.6.
+
+Aggregate generation throughput at three concurrent requests: **29.7 tok/s → 52.6
+tok/s, a 1.77× improvement**, and the batch finishes in 57% of the time. Per-agent
+speed is the price; three agents making progress at once is what is bought.
+
+Repeating it with the full container stack and three worker containers up changed
+nothing measurable (55.4 tok/s aggregate) — inference is on the host GPU and the
+containers are not competing for it.
+
+Host memory during three concurrent requests: **wired 20.17 GB**, compressor flat at
+~3.9 GB. Compare the Devstral table below, where two concurrent requests drove wired to
+28.8 GB — past the nominal ceiling — and free memory to 13%. gpt-oss at three slots does
+not put the machine under pressure at all.
 
 ## If Devstral is required anyway
 

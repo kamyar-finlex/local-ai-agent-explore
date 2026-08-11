@@ -1,0 +1,54 @@
+{
+  "_comment": [
+    "Two dispatchers racing for the same ticket. `race_claims` makes the fixture",
+    "client insert a COMPETING claim comment, with a lower comment id, at the",
+    "moment this dispatcher posts its own - the exact interleaving that a",
+    "read-then-write check cannot see. The election is decided by the",
+    "server-assigned comment id, so this dispatcher must lose, withdraw its",
+    "comment, spawn nothing, and leave the labels untouched.",
+    "",
+    "#31 is the positive control: no competitor, so it must be dispatched. Without",
+    "it, 'nothing was dispatched' would pass the race test for the wrong reason."
+  ],
+  "repo": "example/target",
+  "default_branch": "main",
+  "race_claims": {
+    "30": {"dispatcher": "p4-other-host", "nonce": "0ther0000000race", "worker": "p1-p4w-30"}
+  },
+  "issues": [
+    {
+      "number": 30,
+      "title": "Contested ticket",
+      "state": "open",
+      "labels": ["status:todo", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Two dispatch passes want this at the same instant.",
+        "",
+        "## Files touched",
+        "- src/contested.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_contested.py -q"
+      ]
+    },
+    {
+      "number": 31,
+      "title": "Uncontested ticket (positive control)",
+      "state": "open",
+      "labels": ["status:todo", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Nobody else wants it, so it must be dispatched.",
+        "",
+        "## Files touched",
+        "- src/uncontested.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_uncontested.py -q"
+      ]
+    }
+  ],
+  "comments": {},
+  "pulls": []
+}

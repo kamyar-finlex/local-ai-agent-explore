@@ -1,0 +1,11 @@
+{
+  "body": "## Goal\nRecords can be added, fetched by id and listed.\n\n## Files touched\n- src/example/store.py\n- tests/test_store.py\n\n## Details\nImplement the Store class described under Data model in the README: add(record) returning an id, get(id) raising KeyError when absent, and list() returning insertion order. Cover all three in tests/test_store.py, including the KeyError path.\n\n## Acceptance criteria\npytest -q tests/test_store.py\n\n## Blocked-by\n#9002\n",
+  "labels": [
+    "status:backlog",
+    "priority:2"
+  ],
+  "local_id": "T3",
+  "number": 9003,
+  "parent": 7,
+  "title": "Implement the in-memory record store"
+}
