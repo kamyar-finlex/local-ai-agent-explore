@@ -228,6 +228,12 @@ services:
       TARGET_REPO: ${TARGET_REPO:-}
       TARGET_REPO_TOKEN: ${TARGET_REPO_TOKEN:-}
       SPEC_ISSUE: ${SPEC_ISSUE:-}
+      # The bearer the orchestrator presents to the spawn dispatcher when asking
+      # for a worker container. Same value the dispatcher checks; it never leaves
+      # the isolated network. Not needed to plan, only to dispatch - but a
+      # missing one fails at the first spawn, long after the planning that
+      # produced the tickets, which is an expensive place to discover it.
+      DISPATCH_TOKEN: ${DISPATCH_TOKEN:-}
     volumes:
       # The agent's persistent data. Writable by necessity - it is how the agent
       # persists skills and memory. Keep it under git and review the diffs.

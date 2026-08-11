@@ -16,4 +16,4 @@ __pycache__/
 *.pyc
 
 # Machine-specific values: private ports, LAN addresses, tokens. Never commit.
-local.env
+local.env*
