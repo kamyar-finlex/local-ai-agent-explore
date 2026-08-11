@@ -38,4 +38,34 @@ done < <(find "$SRC" -mindepth 2 -maxdepth 2 -type d)
 
 echo
 echo "$installed skill(s) into $DEST"
+
+# ---- Toolset restriction ----------------------------------------------------
+# The agent ships 18 toolsets enabled. The planner needs terminal, file and
+# skills; todo and memory are harmless and useful. Every other toolset costs
+# twice over:
+#
+#   1. Context. Tool definitions consumed ~23% of a 65,536-token window before
+#      any work began, on a model that has little to spare.
+#   2. Wrong turns. Given a browser and a web search, a small model reaches for
+#      them instead of the command the skill prescribes. Observed: it tried to
+#      read a GitHub issue through browser automation, then through `curl | jq`
+#      (no jq installed, exit 127), and concluded from that the network was
+#      blocked -- while a one-line script call would have fetched it.
+#
+# Removing the option is more reliable than instructing against it. This is the
+# same lesson as the write_file allowlist: a prohibition a tool can still reach
+# around is a guardrail, not a control.
+KEEP="terminal file skills todo memory"
+DROP="web browser code_execution vision image_gen bfl tts computer_use delegation cronjob session_search clarify"
+
+if docker ps --format '{{.Names}}' | grep -qx hermes; then
+  docker exec hermes hermes tools disable $DROP >/dev/null 2>&1 \
+    && echo "restricted toolsets to: $KEEP" \
+    || echo "could not restrict toolsets (is the agent running?)" >&2
+else
+  echo "agent not running - restrict toolsets later with:"
+  echo "  docker exec hermes hermes tools disable $DROP"
+fi
+
+echo
 echo "Restart the agent so it rescans:  docker compose restart hermes"
