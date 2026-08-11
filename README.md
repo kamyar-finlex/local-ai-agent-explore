@@ -8,6 +8,39 @@ A proof of concept. The point is not the local model; it is that the cage is
 **provider-agnostic**. Swap the model endpoint for a cloud API and every other
 boundary stays as-is.
 
+## Verified, not asserted
+
+This PoC treats an **evaluation harness as a first-class deliverable**, alongside the
+sandbox itself. A confinement claim nobody can re-run is a claim, not a result — so
+the boundary is measured from outside the agent, mechanically, on every run.
+
+> ### → **[RESULTS.md](RESULTS.md)** — full captured output: **33 checks, 0 failures**
+>
+> ### → **[TESTING.md](TESTING.md)** — reproduce it yourself, step by step
+
+```bash
+./verify-sandbox.sh; echo "exit=$?"     # RESULT: 33 passed, 0 failed / exit=0
+```
+
+What the harness insists on, and why each matters:
+
+- **Measured from the host, not self-reported.** A model asked whether it can reach
+  the internet may simply answer wrongly. The script never asks the agent anything.
+- **Probes run inside the real agent container** via `docker exec`, not a lookalike
+  container that merely shares its network — no inferential step between the
+  evidence and the claim.
+- **Aimed at live ports.** A closed port is indistinguishable from a blocked one, so
+  the probes target services that are genuinely listening.
+- **A positive control.** The model endpoint must come back *reachable*. If it does
+  not, the probe cannot detect an open port and every negative result is void — so
+  the harness fails rather than reporting a clean sweep.
+- **Non-zero exit on any failure**, making it usable as a gate in CI or before a demo.
+
+That discipline paid for itself: it caught a check of our own that **could never
+fail** — a `/dev/tcp` probe that reported containment it had never measured
+([RESULTS.md §7](RESULTS.md)). `RESULTS.md` also records what was *not* tested, and
+one finding that contradicted the prediction the test was written against.
+
 ## The problem
 
 An agent orchestrator is a program that executes model-chosen shell commands, browses,
@@ -119,6 +152,10 @@ CONTAINER PRIVILEGES       no NET_ADMIN, not privileged, no docker.sock, not on 
 Ask the agent directly too — "fetch https://example.com", "connect to MongoDB on
 host.docker.internal:27017" — but treat its answers as claims. Small models sometimes
 report success at things they did not do. The script is ground truth.
+
+Captured output from a full run, including the live-agent probes and the code-execution
+test, is in **[RESULTS.md](RESULTS.md)**. The procedure to reproduce it — plus the
+traps that produced wrong conclusions along the way — is in **[TESTING.md](TESTING.md)**.
 
 ## Findings worth keeping
 
