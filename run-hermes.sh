@@ -8,6 +8,13 @@
 # the agent root on the host and voids every boundary below.
 
 set -euo pipefail
+
+# Machine-specific values live in local.env, which is gitignored. Sourcing it here
+# keeps private ports and addresses out of the repo and out of captured output, so
+# there is nothing to scrub before publishing.
+HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+[ -f "$HERE_DIR/local.env" ] && . "$HERE_DIR/local.env"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NETWORK=hermes-isolated
 GATE=ollama-gate

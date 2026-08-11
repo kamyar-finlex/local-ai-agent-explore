@@ -12,6 +12,13 @@
 #   EXTRA_PORTS="8080 9000" ./verify-sandbox.sh
 
 set -uo pipefail
+
+# Machine-specific values live in local.env, which is gitignored. Sourcing it here
+# keeps private ports and addresses out of the repo and out of captured output, so
+# there is nothing to scrub before publishing.
+HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+[ -f "$HERE_DIR/local.env" ] && . "$HERE_DIR/local.env"
 NETWORK=hermes-isolated
 GATE=ollama-gate
 NAME=hermes

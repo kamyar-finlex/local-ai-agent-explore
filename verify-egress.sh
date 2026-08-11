@@ -12,6 +12,13 @@
 # RESULTS.md section 7 for the /dev/tcp false pass this discipline caught.
 
 set -uo pipefail
+
+# Machine-specific values live in local.env, which is gitignored. Sourcing it here
+# keeps private ports and addresses out of the repo and out of captured output, so
+# there is nothing to scrub before publishing.
+HERE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+[ -f "$HERE_DIR/local.env" ] && . "$HERE_DIR/local.env"
 NETWORK=p2-egress-isolated
 PROXY=p2-egress-proxy
 GATE=p2-model-gate
