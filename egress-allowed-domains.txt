@@ -1,0 +1,17 @@
+# The entire reachable internet, one host per line. Exact matches only --
+# a leading dot would mean "any subdomain", which is not an allowlist.
+#
+# Determined empirically (see EGRESS.md); every entry says what needs it.
+
+# orchestrator: Linear GraphQL API
+api.linear.app
+
+# workers: git clone / fetch / push over smart HTTP
+github.com
+
+# workers: open a PR (REST + GraphQL, i.e. the `gh` CLI)
+api.github.com
+
+# workers: tarball/zip fetch -- `gh release download`, pip/npm git+https extras.
+# Not used by clone or push; drop this line if nothing in the fleet needs it.
+codeload.github.com

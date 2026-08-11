@@ -9,3 +9,8 @@ config.yaml
 *.log
 hermes-session-*
 hermes-demo-*
+
+# Agent worktrees and python bytecode - never publish these
+.claude/
+__pycache__/
+*.pyc

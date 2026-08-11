@@ -17,6 +17,10 @@ the boundary is measured from outside the agent, mechanically, on every run.
 > ### → **[RESULTS.md](RESULTS.md)** — full captured output: **33 checks, 0 failures**
 >
 > ### → **[TESTING.md](TESTING.md)** — reproduce it yourself, step by step
+>
+> ### → **[SPAWNING-DECISION.md](SPAWNING-DECISION.md)** — spawning workers without a Docker socket: an off-the-shelf socket proxy **broken** (9 failures), a body-validating dispatcher **21/0**
+>
+> ### → **[MODEL-EVALUATION.md](MODEL-EVALUATION.md)** — which local models can actually orchestrate, and why KV cache decides it
 
 ```bash
 ./verify-sandbox.sh; echo "exit=$?"     # RESULT: 33 passed, 0 failed / exit=0
@@ -166,13 +170,27 @@ and `host.docker.internal`. A TCP-level forwarder (socat) preserves the original
 header and gets 403. The gate must be an HTTP proxy that rewrites it, plus
 `proxy_buffering off` or token streaming breaks.
 
-**`OLLAMA_CONTEXT_LENGTH` was ignored.** Set via `launchctl setenv` with the server
-restarted, twice, asking for 40960 and 65536 — the server served 32768 both times, its
-own default. A Modelfile `PARAMETER num_ctx` works, but is clamped to the model's
-trained maximum, so a model declaring 40960 cannot be pushed to 64K at all. Always
-read the served value from `/api/ps`; the advertised window and the env var are both
-unreliable. Setting the orchestrator's `context_length` above what is actually served
-causes silent prompt truncation.
+**`OLLAMA_CONTEXT_LENGTH` never reached the server.** Set via `launchctl setenv` and
+the app relaunched, twice, asking for 40960 then 65536 — the server served 32768 both
+times. The first read of this was "Ollama ignores the variable", which was wrong.
+Inspecting the running process settles it:
+
+```bash
+launchctl getenv OLLAMA_CONTEXT_LENGTH          # 65536
+ps eww -o command= -p "$(pgrep -f 'ollama serve')" | tr ' ' '\n' | grep ^OLLAMA
+# OLLAMA_MODELS=... / OLLAMA_NO_CLOUD=0   -- and nothing else
+```
+
+The variable is not in the server's environment at all, so 32768 was simply Ollama's
+**default**, not an override. A GUI-launched app does not pick up `launchctl setenv`
+values this way. The same trap catches **`OLLAMA_NUM_PARALLEL`**, which matters far
+more — see [MODEL-EVALUATION.md](MODEL-EVALUATION.md), where it decides whether
+concurrent agents are possible at all.
+
+Practical rule either way: a Modelfile `PARAMETER num_ctx` is the reliable lever, it
+is clamped to the model's trained maximum, and **only `/api/ps` tells you what is
+actually served**. Setting the orchestrator's `context_length` above the served value
+makes it start and then silently truncate prompts.
 
 **Bare `--cap-drop ALL` broke the image.** s6-overlay drops privileges during init and
 dies with `s6-applyuidgid: fatal: unable to set supplementary group list`. The minimum
@@ -218,6 +236,22 @@ The internal network, capability set, absent Docker socket, resource limits, pre
 and audit trail are unchanged. The local model exists so the demo runs offline; it is
 not what is being demonstrated.
 
+## Adding HTTPS destinations
+
+The gate's path allowlist works only because the model API is plaintext. An agent
+that also needs `api.linear.app` and GitHub cannot be filtered that way — over TLS a
+proxy sees `CONNECT github.com:443` and nothing else. That case needs a second,
+separate mechanism: a **domain** allowlist on a CONNECT proxy, with the `--internal`
+network still the reason it holds.
+
+> ### → **[EGRESS.md](EGRESS.md)** — the prototype, the empirically determined GitHub
+> allowlist, and `./verify-egress.sh` (**40 checks, 0 failures**, 41 with a live
+> inference call) including the bypass tests
+>
+> It also states plainly what a domain allowlist does *not* buy you: allowing
+> `github.com` so an agent can push branches allows it to push anything, anywhere on
+> `github.com`.
+
 ## Files
 
 | File | Purpose |
@@ -230,6 +264,17 @@ not what is being demonstrated.
 | `hermes-config.example.yaml` | Model wiring — placeholders only, no secrets |
 | `TESTING.md` | Step-by-step procedure to reproduce the results |
 | `RESULTS.md` | Captured output from a full run |
+| `MODEL-EVALUATION.md` | Model choice: KV cost, concurrency limits, measured verdict |
+| `SPAWNING-DECISION.md` | Spawning workers without a Docker socket, with the exploit |
+| `p1-dispatcher.py` | Body-validating spawn dispatcher (the recommendation) |
+| `verify-spawning.sh` | Adversarial harness: `proxy` (fails) vs `dispatcher` (passes) |
+| `EGRESS.md` | Domain-allowlisted HTTPS egress: design, allowlist, results |
+| `setup-egress.sh` | Builds the `p2-*` egress sandbox; `teardown` removes it |
+| `egress-proxy.conf` | squid domain allowlist, CONNECT-only, ordered denies |
+| `egress-allowed-domains.txt` | The allowlist itself |
+| `egress-proxy.Dockerfile` | alpine + squid, ~21 MB |
+| `egress-probe.Dockerfile` | Worker stand-in: git, curl, python3 |
+| `verify-egress.sh` | Egress verification, including the bypass tests |
 
 ## Notes
 
