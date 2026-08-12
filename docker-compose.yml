@@ -275,7 +275,7 @@ services:
   worker-image:
     build:
       context: .
-      dockerfile: egress-probe.Dockerfile
+      dockerfile: worker.Dockerfile
     image: hermes-worker:latest
     profiles: ["images"]
     command: ["true"]
