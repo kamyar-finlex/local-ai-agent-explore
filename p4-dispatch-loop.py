@@ -64,7 +64,12 @@ TOKEN            = os.environ.get("TARGET_REPO_TOKEN", "")
 API_ROOT         = os.environ.get("P4_GITHUB_API", "https://api.github.com")
 MAX_CONCURRENCY  = int(os.environ.get("P4_MAX_CONCURRENCY", "3"))
 WORKER_TIMEOUT_M = int(os.environ.get("P4_WORKER_TIMEOUT_MINUTES", "45"))
-SPAWN_URL        = os.environ.get("P4_SPAWN_URL", "http://p1-dispatcher:2375")
+# Default to the name the composed stack actually uses. The old default,
+# p1-dispatcher, was the standalone rig's container and does not exist under
+# compose - and because it is absent from NO_PROXY, urllib handed the request
+# to the egress proxy, which failed to resolve it. The symptom was a DNS error
+# that read like a network fault rather than a wrong hostname.
+SPAWN_URL        = os.environ.get("P4_SPAWN_URL", "http://hermes-dispatcher:2375")
 SPAWN_TOKEN      = os.environ.get("P4_SPAWN_TOKEN", "")
 WORKER_PREFIX    = os.environ.get("P4_WORKER_NAME_PREFIX", "p1-p4w-")
 WORKER_CMD_TMPL  = os.environ.get(

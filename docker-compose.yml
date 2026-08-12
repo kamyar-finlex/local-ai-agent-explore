@@ -255,6 +255,12 @@ services:
       # missing one fails at the first spawn, long after the planning that
       # produced the tickets, which is an expensive place to discover it.
       DISPATCH_TOKEN: ${DISPATCH_TOKEN:-}
+      # Where the dispatch loop finds the spawn dispatcher, and the bearer it
+      # presents. Set explicitly rather than relying on the script's default:
+      # this host must also appear in NO_PROXY above, or urllib hands the
+      # request to the egress proxy and the failure looks like broken DNS.
+      P4_SPAWN_URL: ${P4_SPAWN_URL:-http://hermes-dispatcher:2375}
+      P4_SPAWN_TOKEN: ${DISPATCH_TOKEN:-}
     volumes:
       # The agent's persistent data. Writable by necessity - it is how the agent
       # persists skills and memory. Keep it under git and review the diffs.
