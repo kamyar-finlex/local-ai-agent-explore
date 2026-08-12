@@ -1,6 +1,6 @@
 ---
 name: orchestrator-planner
-description: "Decompose a spec issue into contract-conforming tickets."
+description: "Plan: turn a spec issue into tickets. Not for starting work."
 version: 0.2.0
 author: local-ai-agent-explore
 license: MIT
@@ -31,6 +31,10 @@ the script owns control the output has never once been malformed. So the script
 owns control.
 
 ## When to Use
+
+**Not** when asked to implement, start, build or work on a ticket that already
+exists — that is `orchestrator-dispatch`. This skill only *creates* tickets.
+Running it when tickets already exist duplicates them.
 
 - A target repository has an open issue labelled `spec` and no implementation
   issues yet.

@@ -1,6 +1,6 @@
 ---
 name: orchestrator-dispatch
-description: "Dispatch approved tickets to worker containers."
+description: "Start work on a ticket: implement, dispatch, spawn workers."
 version: 0.1.0
 author: local-ai-agent-explore
 license: MIT
@@ -26,6 +26,11 @@ time, and a model that can be argued into dispatching a blocked ticket destroys
 the review gate the whole workflow rests on.
 
 ## When to Use
+
+**Use this whenever a human asks to start, implement, build, code or work on a
+ticket, or to dispatch work.** Those all mean the same thing here: hand approved
+tickets to workers. Creating tickets is `orchestrator-planner`; if tickets already
+exist, planning again duplicates them.
 
 - A human has moved one or more tickets to `status:todo` and work should start.
 - Someone asks what is ready, or why a particular ticket has not started.
