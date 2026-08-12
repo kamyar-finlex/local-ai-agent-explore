@@ -47,5 +47,12 @@ RUN git config --system user.name "hermes-worker" \
  && git config --system user.email "hermes-worker@users.noreply.github.com" \
  && git config --system --add safe.directory '*'
 
+# The worker itself. The dispatcher's create template names
+# /usr/local/bin/p4-worker.sh as PID 1 and cannot mount anything, so the program
+# has to be in the image rather than bind-mounted in.
+COPY worker.py /usr/local/bin/worker.py
+COPY p4-worker.sh /usr/local/bin/p4-worker.sh
+RUN chmod 0755 /usr/local/bin/worker.py /usr/local/bin/p4-worker.sh
+
 WORKDIR /work
 USER worker

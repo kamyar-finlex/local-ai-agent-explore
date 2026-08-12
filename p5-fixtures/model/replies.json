@@ -1,0 +1,219 @@
+{
+  "_comment": [
+    "Canned model replies for verify-worker.sh. The mock endpoint reads the",
+    "'TARGET FILE: <path>' line out of the prompt worker.py sent, so the key is the",
+    "file being asked about; '<path>#<n>' answers the n-th call for that path",
+    "(rejection feedback and acceptance retries both count), and '*' is the",
+    "fallback. A string value is served as the assistant's raw content; an object",
+    "value is served as its JSON encoding, which is how the well-formed replies",
+    "stay readable here. The literal '__http500__' makes the endpoint fail instead.",
+    "No live model is involved in any of this, and no reply here is application",
+    "code for any real project - they are the smallest files that make the",
+    "outcome under test happen."
+  ],
+  "scenarios": {
+    "good": {
+      "_why": "The happy path: one valid reply per declared file. 'contents' is a string here and a list of lines for the test file, so both accepted shapes are exercised.",
+      "src/slug.py": {
+        "path": "src/slug.py",
+        "contents": "import re\n\n\ndef slugify(text):\n    \"\"\"Lowercase, collapse non-alphanumerics to one hyphen, strip the ends.\"\"\"\n    return re.sub(r\"[^a-z0-9]+\", \"-\", (text or \"\").lower()).strip(\"-\")\n"
+      },
+      "tests/test_slug.py": {
+        "path": "tests/test_slug.py",
+        "contents": [
+          "from src.slug import slugify",
+          "",
+          "",
+          "def test_slugify_punctuation():",
+          "    assert slugify(\"Hello, World!\") == \"hello-world\"",
+          "",
+          "",
+          "def test_slugify_spaces():",
+          "    assert slugify(\"  A  B  \") == \"a-b\""
+        ]
+      }
+    },
+    "wrong-path": {
+      "_why": "Every reply answers about a file the ticket did not declare. The script must refuse it, not write it, and stop with the model-unusable code.",
+      "*": {
+        "path": "src/other.py",
+        "contents": "SECRET = 'this path was never declared'\n"
+      }
+    },
+    "extra-files-key": {
+      "_why": "A reply that is right about the target file AND smuggles a second file alongside it. Rejected; the retry is clean, so the run finishes and src/sneaky.py must not exist anywhere.",
+      "src/slug.py#1": {
+        "path": "src/slug.py",
+        "contents": "import re\n\n\ndef slugify(text):\n    \"\"\"Lowercase, collapse non-alphanumerics to one hyphen, strip the ends.\"\"\"\n    return re.sub(r\"[^a-z0-9]+\", \"-\", (text or \"\").lower()).strip(\"-\")\n",
+        "extra_files": {
+          "src/sneaky.py": "print('this file was never declared by any ticket')\n"
+        }
+      },
+      "src/slug.py#2": {
+        "path": "src/slug.py",
+        "contents": "import re\n\n\ndef slugify(text):\n    \"\"\"Lowercase, collapse non-alphanumerics to one hyphen, strip the ends.\"\"\"\n    return re.sub(r\"[^a-z0-9]+\", \"-\", (text or \"\").lower()).strip(\"-\")\n"
+      },
+      "tests/test_slug.py": {
+        "path": "tests/test_slug.py",
+        "contents": [
+          "from src.slug import slugify",
+          "",
+          "",
+          "def test_slugify_punctuation():",
+          "    assert slugify(\"Hello, World!\") == \"hello-world\"",
+          "",
+          "",
+          "def test_slugify_spaces():",
+          "    assert slugify(\"  A  B  \") == \"a-b\""
+        ]
+      }
+    },
+    "readme-target": {
+      "_why": "The model tries to answer about the target README. Refused on the path check every time; the README must be byte-identical afterwards.",
+      "*": {
+        "path": "README.md",
+        "contents": "# rewritten by an agent\n"
+      }
+    },
+    "needs-file": {
+      "_why": "The sanctioned way to say the ticket is under-specified. Must comment, write nothing, and exit with its own code.",
+      "src/slug.py": {
+        "needs_file": "src/__init__.py",
+        "reason": "the package needs an explicit __init__.py before src.slug imports"
+      },
+      "tests/test_slug.py": {
+        "path": "tests/test_slug.py",
+        "contents": [
+          "from src.slug import slugify",
+          "",
+          "",
+          "def test_slugify_punctuation():",
+          "    assert slugify(\"Hello, World!\") == \"hello-world\"",
+          "",
+          "",
+          "def test_slugify_spaces():",
+          "    assert slugify(\"  A  B  \") == \"a-b\""
+        ]
+      }
+    },
+    "retry-then-pass": {
+      "_why": "First implementation fails the acceptance command; the failure is fed back and the second attempt passes. Proves the retry is real and that it converges.",
+      "src/slug.py#1": {
+        "path": "src/slug.py",
+        "contents": "def slugify(text):\n    return (text or \"\").replace(\" \", \"-\")\n"
+      },
+      "src/slug.py#2": {
+        "path": "src/slug.py",
+        "contents": "import re\n\n\ndef slugify(text):\n    \"\"\"Lowercase, collapse non-alphanumerics to one hyphen, strip the ends.\"\"\"\n    return re.sub(r\"[^a-z0-9]+\", \"-\", (text or \"\").lower()).strip(\"-\")\n"
+      },
+      "tests/test_slug.py": {
+        "path": "tests/test_slug.py",
+        "contents": [
+          "from src.slug import slugify",
+          "",
+          "",
+          "def test_slugify_punctuation():",
+          "    assert slugify(\"Hello, World!\") == \"hello-world\"",
+          "",
+          "",
+          "def test_slugify_spaces():",
+          "    assert slugify(\"  A  B  \") == \"a-b\""
+        ]
+      }
+    },
+    "retry-exhausted": {
+      "_why": "The implementation never passes. The worker must exhaust its attempts and commit NOTHING - the failure mode that matters most, because committing anyway would look like success.",
+      "src/slug.py": {
+        "path": "src/slug.py",
+        "contents": "def slugify(text):\n    return (text or \"\").replace(\" \", \"-\")\n"
+      },
+      "tests/test_slug.py": {
+        "path": "tests/test_slug.py",
+        "contents": [
+          "from src.slug import slugify",
+          "",
+          "",
+          "def test_slugify_punctuation():",
+          "    assert slugify(\"Hello, World!\") == \"hello-world\"",
+          "",
+          "",
+          "def test_slugify_spaces():",
+          "    assert slugify(\"  A  B  \") == \"a-b\""
+        ]
+      }
+    },
+    "prose": {
+      "_why": "Never returns JSON at all - the failure the planner met on four live runs. The retry loop must exhaust and the script must stop loudly with the raw reply.",
+      "*": "Sure! Here is how I would implement it:\n\n1. Create the module\n2. Add a test\n\nWould you like me to continue?"
+    },
+    "http-500": {
+      "_why": "The endpoint is down. A transport failure has no reply to feed back, so it is retried with a backoff and then reported as the model being unusable.",
+      "*": "__http500__"
+    },
+    "suite-breaks": {
+      "_why": "Issue #39. The ticket's own acceptance command passes while a test the worker did not write starts failing. Report it, commit nothing, and never touch the test.",
+      "src/util.py": {
+        "path": "src/util.py",
+        "contents": "\"\"\"Rewritten by the model. double() no longer matches what its existing test\npins, which is exactly the finding the full suite exists to catch.\"\"\"\n\n\ndef double(n):\n    return n * 3\n\n\ndef triple(n):\n    return n * 3\n"
+      },
+      "tests/test_triple.py": {
+        "path": "tests/test_triple.py",
+        "contents": "from src.util import triple\n\n\ndef test_triple():\n    assert triple(2) == 6\n"
+      }
+    },
+    "weakens-test": {
+      "_why": "Issue #40. First reply deletes an existing test, second one switches it off with a skip marker. Both refused; the file on the branch must be untouched.",
+      "tests/test_util.py#1": {
+        "path": "tests/test_util.py",
+        "contents": "from src.util import double\n\n\ndef test_double():\n    assert double(2) == 4\n\n\ndef test_double_negative():\n    assert double(-3) == -6\n"
+      },
+      "tests/test_util.py#2": {
+        "path": "tests/test_util.py",
+        "contents": "import pytest\n\nfrom src.util import double\n\n\ndef test_double():\n    assert double(2) == 4\n\n\n@pytest.mark.skip(reason='flaky')\ndef test_double_zero():\n    assert double(0) == 0\n\n\ndef test_double_negative():\n    assert double(-3) == -6\n"
+      }
+    },
+    "weakens-then-fixes": {
+      "_why": "Issue #40 again: the same deletion, then a reply that keeps every existing test and adds the new one. The positive control for the weakening check - it must be a rejection that can be recovered from, not a dead end.",
+      "tests/test_util.py#1": {
+        "path": "tests/test_util.py",
+        "contents": "from src.util import double\n\n\ndef test_double():\n    assert double(2) == 4\n\n\ndef test_double_negative():\n    assert double(-3) == -6\n"
+      },
+      "tests/test_util.py#2": {
+        "path": "tests/test_util.py",
+        "contents": "from src.util import double\n\n\ndef test_double():\n    assert double(2) == 4\n\n\ndef test_double_zero():\n    assert double(0) == 0\n\n\ndef test_double_negative():\n    assert double(-3) == -6\n"
+      }
+    },
+    "runtime-scope": {
+      "_why": "Issue #41. Both declared files are written correctly and the acceptance command passes, but importing the module creates cache.db, which no ticket declared. Only a git-level scope gate catches this - inspecting the replies cannot.",
+      "src/cache.py": {
+        "path": "src/cache.py",
+        "contents": "\"\"\"A cache that quietly writes a file the ticket never declared. The acceptance\ncommand passes; the scope gate is what catches it.\"\"\"\n\n_STORE = {}\n\nwith open('cache.db', 'w', encoding='utf-8') as _fh:\n    _fh.write('{}')\n\n\ndef remember(key, value):\n    _STORE[key] = value\n\n\ndef recall(key):\n    return _STORE.get(key)\n"
+      },
+      "tests/test_cache.py": {
+        "path": "tests/test_cache.py",
+        "contents": "from src.cache import recall, remember\n\n\ndef test_remember_and_recall():\n    remember('a', 1)\n    assert recall('a') == 1\n\n\ndef test_recall_missing():\n    assert recall('nope') is None\n"
+      }
+    },
+    "dependency-bad": {
+      "_why": "Issue #44. The manifest reply adds a package the target README never mentions. ORCHESTRATOR.md: no dependency the README does not sanction - and the worker's container cannot reach a registry anyway, so a run that got this far would fail later and less clearly.",
+      "requirements.txt": {
+        "path": "requirements.txt",
+        "contents": "pytest\nrequests==2.31.0\n"
+      }
+    },
+    "dependency-ok": {
+      "_why": "Issue #44 again, with only what the README's Dependencies section already sanctions. The positive control for the check above: it must permit a legitimate manifest, or it would block the work it is meant to police.",
+      "requirements.txt": {
+        "path": "requirements.txt",
+        "contents": "pytest\n"
+      }
+    },
+    "no-change": {
+      "_why": "Issue #40 with a reply that is byte-identical to what is already on the default branch. Nothing to commit is its own outcome: an empty pull request would read as success.",
+      "tests/test_util.py": {
+        "path": "tests/test_util.py",
+        "contents": "from src.util import double\n\n\ndef test_double():\n    assert double(2) == 4\n\n\ndef test_double_zero():\n    assert double(0) == 0\n"
+      }
+    }
+  }
+}

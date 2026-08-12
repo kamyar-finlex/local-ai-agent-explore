@@ -307,6 +307,41 @@ did not send.
 > hash of the reply it came from, so "it did not fabricate" is checked, not
 > claimed.
 
+## Doing the work
+
+The **worker** is the other end of the same pipeline: one issue number in, one
+pull request out. It clones the target repository into its tmpfs, branches, asks
+the model for the contents of each file the ticket declares, runs the ticket's
+acceptance command and then the project's full test suite, and opens a pull
+request that says `Closes #N`. It cannot merge it.
+
+Control is inverted here for the same reason it is in the planner. The model is
+never asked to implement a ticket; it is asked, once per declared file, for the
+complete contents of *that* file, and the script does everything else. It never
+runs a command, never chooses what happens next, and cannot choose which file it
+is writing — a reply about a different path is refused rather than filtered.
+
+The interesting part is what happens when things go wrong, because that is most
+of the time. Every outcome has its own exit code: a ticket that does not match
+`ORCHESTRATOR.md` is refused **before the clone and before the first model
+call**; a reply proposing an extra file is refused and that file never exists; a
+failing acceptance command is retried with its own output fed back and, if it
+still fails, **nothing is committed**; a test that starts failing is reported
+rather than repaired; and "this work needs a file the ticket did not declare" is
+a comment on the issue and an exit code of its own, having written nothing at
+all. There is no code path in the program that sets a label, merges, or
+force-pushes.
+
+```bash
+./verify-worker.sh; echo "exit=$?"      # RESULT: 116 passed, 0 failed / exit=0
+./verify-worker.sh image                # + one ticket inside hermes-worker:latest
+```
+
+> ### → **[WORKER.md](WORKER.md)** — the loop, where exactly the model is
+> consulted, the three layers that hold the declared-file list, the mutation test
+> that breaks the scope check and proves the harness goes red, and an honest list
+> of what will still go wrong on a first real run
+
 ## Files
 
 | File | Purpose |
@@ -342,6 +377,14 @@ did not send.
 | `p3-fixtures/good/` | A conforming plan, as rendered issues, for the validator |
 | `p3-fixtures/spec/` | A spec issue, README and seed scenario used as offline planning input |
 | `p3-fixtures/model/replies.json` | Twenty canned model replies the harness drives the loop with |
+| `WORKER.md` | The worker loop, the scope layers, the mutation test, expected first-run failures |
+| `worker.py` | The worker: one ticket in, one pull request out; the model only returns file contents |
+| `p4-worker.sh` | The worker container's PID 1, named by the dispatcher's default worker command |
+| `p4-worker-instructions.md` | What the worker does, and the whole of what the model inside it is told |
+| `verify-worker.sh` | Worker verification: 116 checks, an in-image run, and a mutation control |
+| `p5-fixtures/repo/` | The fixture target project a worker is pointed at — no domain, on purpose |
+| `p5-fixtures/issues.json` | Fixture GitHub state: one conforming ticket, nine unusable ones |
+| `p5-fixtures/model/replies.json` | Sixteen canned scenarios: good, wrong-path, prose, dead endpoint, weakening, leaking |
 
 ## Notes
 

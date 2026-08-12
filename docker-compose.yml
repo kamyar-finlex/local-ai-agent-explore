@@ -158,7 +158,10 @@ services:
       # live HERE, in the dispatcher's own environment - never in a /spawn
       # request. That is the whole safety property: the caller cannot name a
       # variable, add one, override one, or read one back.
-      WORKER_ENV_ALLOWLIST: ${WORKER_ENV_ALLOWLIST:-GITHUB_TOKEN,TARGET_REPO}
+      WORKER_ENV_ALLOWLIST: ${WORKER_ENV_ALLOWLIST:-GITHUB_TOKEN,TARGET_REPO,P5_TEST_COMMAND}
+      # The target project's full test suite. Repository knowledge, not ticket
+      # knowledge, so it belongs here rather than in an issue body.
+      P5_TEST_COMMAND: ${P4_TEST_COMMAND:-pytest -q}
       GITHUB_TOKEN: ${TARGET_REPO_TOKEN:-}
       TARGET_REPO: ${TARGET_REPO:-}
       # The worker's one writable mount. Keep the size BELOW WORKER_MEMORY:
@@ -223,7 +226,7 @@ services:
     # cannot be skipped; and observed behaviour was that it loaded the skill and
     # then improvised anyway, which is what having to *choose* to read something
     # invites.
-    command: ["--skills", "orchestrator-planner"]
+    command: ["--skills", "orchestrator-planner,orchestrator-dispatch"]
     networks: [isolated]
     depends_on:
       preflight: {condition: service_completed_successfully}

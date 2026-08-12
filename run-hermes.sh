@@ -88,5 +88,5 @@ if [ "$ATTACH" = "1" ]; then
   #
   # Exec-ing a fresh agent gives a real TTY every time, and leaving a session
   # ends only that session rather than emptying the container.
-  exec docker compose exec hermes hermes --skills orchestrator-planner
+  exec docker compose exec hermes hermes --skills orchestrator-planner,orchestrator-dispatch
 fi
