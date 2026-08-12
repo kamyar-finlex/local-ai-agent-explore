@@ -78,7 +78,7 @@
         "id": 6001,
         "created_at": "2026-01-01T09:00:00Z",
         "user": "p4-dispatcher",
-        "body": "<!-- p4-claim {\"dispatcher\":\"p4-old\",\"issue\":20,\"nonce\":\"dead0000dead0000\",\"worker\":\"p1-p4w-20\"} -->\nClaimed."
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-old\",\"issue\":20,\"nonce\":\"dead0000dead0000\",\"worker\":\"hermes-worker-20\"} -->\nClaimed."
       }
     ],
     "21": [
@@ -86,7 +86,7 @@
         "id": 6002,
         "created_at": "2026-01-01T11:55:00Z",
         "user": "p4-dispatcher",
-        "body": "<!-- p4-claim {\"dispatcher\":\"p4-now\",\"issue\":21,\"nonce\":\"a11ve000a11ve000\",\"worker\":\"p1-p4w-21\"} -->\nClaimed."
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-now\",\"issue\":21,\"nonce\":\"a11ve000a11ve000\",\"worker\":\"hermes-worker-21\"} -->\nClaimed."
       }
     ],
     "22": [
@@ -94,7 +94,7 @@
         "id": 6003,
         "created_at": "2026-01-01T08:00:00Z",
         "user": "p4-dispatcher",
-        "body": "<!-- p4-claim {\"dispatcher\":\"p4-old\",\"issue\":22,\"nonce\":\"wait0000wait0000\",\"worker\":\"p1-p4w-22\"} -->\nClaimed."
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-old\",\"issue\":22,\"nonce\":\"wait0000wait0000\",\"worker\":\"hermes-worker-22\"} -->\nClaimed."
       }
     ],
     "23": [
@@ -102,12 +102,12 @@
         "id": 6004,
         "created_at": "2026-01-01T08:30:00Z",
         "user": "p4-dispatcher",
-        "body": "<!-- p4-claim {\"dispatcher\":\"p4-old\",\"issue\":23,\"nonce\":\"5l0w00005l0w0000\",\"worker\":\"p1-p4w-23\"} -->\nClaimed."
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-old\",\"issue\":23,\"nonce\":\"5l0w00005l0w0000\",\"worker\":\"hermes-worker-23\"} -->\nClaimed."
       },
       {
         "id": 6005,
         "created_at": "2026-01-01T11:58:00Z",
-        "user": "p1-p4w-23",
+        "user": "hermes-worker-23",
         "body": "<!-- p4-heartbeat {\"nonce\":\"5l0w00005l0w0000\"} -->\nStill working: 3 of 5 acceptance runs done."
       }
     ]

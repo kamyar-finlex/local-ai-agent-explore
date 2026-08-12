@@ -13,7 +13,7 @@
   "repo": "example/target",
   "default_branch": "main",
   "race_claims": {
-    "30": {"dispatcher": "p4-other-host", "nonce": "0ther0000000race", "worker": "p1-p4w-30"}
+    "30": {"dispatcher": "p4-other-host", "nonce": "0ther0000000race", "worker": "hermes-worker-30"}
   },
   "issues": [
     {

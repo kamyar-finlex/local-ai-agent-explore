@@ -209,8 +209,8 @@ run_dispatch claim basic.json 3 "record:$WORK/claim.jsonl"
 [ "$(claimed "$WORK/claim.out.json" 16)" = "True" ] \
   && ok "#16 is claimed and its worker spawned" \
   || bad "POSITIVE CONTROL FAILED: #16 was not claimed ($(claim_reason "$WORK/claim.out.json" 16))"
-grep -q '"name": "p1-p4w-16"' "$WORK/claim.jsonl" \
-  && ok "the spawn request names one container per ticket (p1-p4w-16)" \
+grep -q '"name": "hermes-worker-16"' "$WORK/claim.jsonl" \
+  && ok "the spawn request names one container per ticket (hermes-worker-16)" \
   || bad "no spawn request for #16"
 grep -q 'P4_ISSUE=16' "$WORK/claim.jsonl" \
   && ok "the worker is handed its issue number and nothing else" \
@@ -229,7 +229,7 @@ with_timeout 60 python3 "$SCRIPT" dispatch --source "fixture:$WORK/claim.state.j
   --fixture-out "$WORK/claim2.state.json" --now "$NOW" --limit 3 \
   --spawn "record:$WORK/claim2.jsonl" --lock "$WORK/claim2.lock" \
   > "$WORK/claim2.out.json" 2> "$WORK/claim2.err"
-grep -q 'p1-p4w-16' "$WORK/claim2.jsonl" 2>/dev/null \
+grep -q 'hermes-worker-16' "$WORK/claim2.jsonl" 2>/dev/null \
   && bad "a second pass spawned a SECOND worker for #16" \
   || ok "a second pass does not re-dispatch #16 (label + claim comment both hold it)"
 # A competing dispatcher inserts its claim, with a lower comment id, in the exact
@@ -238,7 +238,7 @@ run_dispatch race contested.json 5 "record:$WORK/race.jsonl"
 [ "$(claimed "$WORK/race.out.json" 30)" = "False" ] \
   && ok "lost the claim race on #30 and stood down ($(claim_reason "$WORK/race.out.json" 30))" \
   || bad "#30 was claimed although another dispatcher's claim comment was older"
-grep -q 'p1-p4w-30' "$WORK/race.jsonl" 2>/dev/null \
+grep -q 'hermes-worker-30' "$WORK/race.jsonl" 2>/dev/null \
   && bad "a worker was spawned for #30 after losing the race" \
   || ok "no worker spawned for the lost ticket"
 [ "$(labels_of "$WORK/race.state.json" 30)" = "priority:1 status:todo" ] \
@@ -291,14 +291,14 @@ with_timeout 60 python3 "$SCRIPT" reap --source "fixture:$FIX/stale-claim.json" 
 [ "$(reap_action "$WORK/reap.out.json" 20)" = "released" ] \
   && ok "POSITIVE CONTROL: #20, silent for 180 minutes, is released" \
   || bad "POSITIVE CONTROL FAILED: the stale claim on #20 was not released"
-if grep -q '"name": "p1-p4w-20", "verb": "stop"' "$WORK/reap.jsonl" &&
-   grep -q '"name": "p1-p4w-20", "verb": "remove"' "$WORK/reap.jsonl"; then
+if grep -q '"name": "hermes-worker-20", "verb": "stop"' "$WORK/reap.jsonl" &&
+   grep -q '"name": "hermes-worker-20", "verb": "remove"' "$WORK/reap.jsonl"; then
   ok "its container is stopped and removed through the spawn dispatcher"
 else
   bad "the dead worker's container was never cleaned up: $(tr '\n' ' ' < "$WORK/reap.jsonl")"
 fi
-if grep -q 'p1-p4w-21' "$WORK/reap.jsonl"; then
-  bad "the reaper touched the LIVE worker's container (p1-p4w-21)"
+if grep -q 'hermes-worker-21' "$WORK/reap.jsonl"; then
+  bad "the reaper touched the LIVE worker's container (hermes-worker-21)"
 else
   ok "no stop/remove was aimed at a live worker's container"
 fi
@@ -411,7 +411,7 @@ echo "LIVE SPAWN THROUGH p1-dispatcher  (opt-in: needs ./p1-spawn-setup.sh)"
   else
     DTOKEN=$(docker inspect "$DISP" --format '{{range .Config.Env}}{{println .}}{{end}}' \
              | sed -n 's/^DISPATCH_TOKEN=//p')
-    docker rm -f p1-p4w-31 p1-p4w-30 >/dev/null 2>&1
+    docker rm -f hermes-worker-31 hermes-worker-30 >/dev/null 2>&1
     # The dispatch loop runs where the orchestrator runs: in a container on the
     # spawn network, with no Docker socket of its own.
     # Only the repo is mounted, read-only. Everything the pass writes stays in
@@ -428,23 +428,23 @@ echo "LIVE SPAWN THROUGH p1-dispatcher  (opt-in: needs ./p1-spawn-setup.sh)"
     rc=$?
     [ "$rc" -eq 0 ] && ok "the dispatch loop ran inside a container with no Docker socket (exit 0)" \
                     || bad "containerised dispatch pass exited $rc: $(tail -2 "$WORK/live.err")"
-    if [ -n "$(docker ps -aq -f name='^p1-p4w-31$')" ]; then
-      ok "a real worker container p1-p4w-31 exists"
-      [ "$(docker inspect p1-p4w-31 --format '{{index .Config.Labels "role"}}')" = "hermes-worker" ] \
+    if [ -n "$(docker ps -aq -f name='^hermes-worker-31$')" ]; then
+      ok "a real worker container hermes-worker-31 exists"
+      [ "$(docker inspect hermes-worker-31 --format '{{index .Config.Labels "role"}}')" = "hermes-worker" ] \
         && ok "it carries role=hermes-worker (the spawn dispatcher stamped it)" \
         || bad "worker label is wrong"
-      [ "$(docker inspect p1-p4w-31 --format '{{if .HostConfig.Binds}}{{.HostConfig.Binds}}{{else}}[]{{end}}')" = "[]" ] \
+      [ "$(docker inspect hermes-worker-31 --format '{{if .HostConfig.Binds}}{{.HostConfig.Binds}}{{else}}[]{{end}}')" = "[]" ] \
         && ok "it has no bind mounts - the hardened template still applies" \
         || bad "the worker got bind mounts"
-      [ "$(docker inspect p1-p4w-31 --format '{{.State.Running}}')" = "true" ] \
+      [ "$(docker inspect hermes-worker-31 --format '{{.State.Running}}')" = "true" ] \
         && ok "it is running" || bad "worker is not running"
     else
       bad "no worker container was created"
     fi
-    [ -z "$(docker ps -aq -f name='^p1-p4w-30$')" ] \
+    [ -z "$(docker ps -aq -f name='^hermes-worker-30$')" ] \
       && ok "no container for #30, the ticket this pass lost the claim race on" \
       || bad "a container was created for a ticket this dispatcher did not own"
-    docker rm -f p1-p4w-31 p1-p4w-30 >/dev/null 2>&1
+    docker rm -f hermes-worker-31 hermes-worker-30 >/dev/null 2>&1
     ok "cleanup: p4 worker containers removed"
   fi
 fi
