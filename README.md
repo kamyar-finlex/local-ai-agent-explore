@@ -276,23 +276,36 @@ labelled `spec` goes in, implementation issues come out — each with the sectio
 the dispatcher parses, one priority, declared dependencies, and a file list that
 lets concurrent tickets avoid each other.
 
-Its design problem is the model, not the prompt. A 20B model asked for twenty
-fully-formed tickets in one completion produces malformed ones near the end, and
-a failure at ticket 17 loses the first sixteen with it. So planning proceeds one
-ticket per tool call against an append-only ledger, with the ticket *format*
-rendered by a script rather than generated — leaving the model only the judgement
-that is actually its job.
+Its design problem is the model, not the prompt. The first version handed a 20B
+model a seven-phase procedure to follow; across four live runs it improvised
+instead of starting, misread a missing `jq` as a network outage, wrote the
+target project's code into its own data directory, stopped after one ticket —
+and, on the last run, printed a confident five-ticket plan when the ledger held
+two. The pattern was consistent: where the *script* owned control the output was
+flawless, and where the *model* owned control it drifted.
+
+So control is inverted. A script runs the whole loop and calls the model only
+for decisions — one for the file layout, then one per ticket — each constrained
+to a JSON object whose schema is in the prompt, validated on receipt, retried
+with the parse error fed back, and, when the retries run out, **stopped loudly
+with the raw reply printed**. There is no branch that supplies a value the model
+did not send.
 
 ```bash
-./verify-planner.sh; echo "exit=$?"     # RESULT: 45 passed, 0 failed / exit=0
+./verify-planner.sh; echo "exit=$?"     # RESULT: 98 passed, 0 failed / exit=0
 ```
 
-> ### → **[PLANNER.md](PLANNER.md)** — the planning flow, the 18-check validator,
+> ### → **[PLANNER.md](PLANNER.md)** — the loop, where exactly the model is
+> consulted, the 18-check validator, the measured first-try JSON validity rate,
 > and an honest list of what a 20B model will get wrong anyway
 >
 > The harness checks the validator against `ORCHESTRATOR.md` itself, fires every
-> check at a deliberately malformed plan, and refuses to report a clean sweep
-> unless every check has been *made* to fail.
+> check at a deliberately malformed plan, refuses to report a clean sweep unless
+> every check has been *made* to fail — and drives the loop against a mock
+> endpoint that returns prose, truncated JSON, a five-ticket array and a mid-run
+> 500, proving the planner stops rather than invents. Every ticket carries the
+> hash of the reply it came from, so "it did not fabricate" is checked, not
+> claimed.
 
 ## Files
 
@@ -323,10 +336,12 @@ that is actually its job.
 | `verify-egress.sh` | Egress verification, including the bypass tests |
 | `ORCHESTRATOR.md` | The contract planner, dispatcher and workers all follow |
 | `bootstrap-labels.sh` | Creates that contract's labels in the target repo |
-| `PLANNER.md` | Planning flow, validator design, expected model failures |
+| `PLANNER.md` | The planning loop, validator design, measured model reliability, expected failures |
 | `hermes-skills/.../orchestrator-planner/` | The planner skill and its two scripts |
-| `verify-planner.sh` | Planner verification: contract agreement, positive controls |
+| `verify-planner.sh` | Planner verification: contract agreement, positive controls, mock-model loop suites |
 | `p3-fixtures/good/` | A conforming plan, as rendered issues, for the validator |
+| `p3-fixtures/spec/` | A spec issue, README and seed scenario used as offline planning input |
+| `p3-fixtures/model/replies.json` | Twenty canned model replies the harness drives the loop with |
 
 ## Notes
 

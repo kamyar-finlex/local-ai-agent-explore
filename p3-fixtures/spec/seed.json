@@ -1,0 +1,24 @@
+{
+  "_comment": "Fixed scenario for `p3-plan.py measure --kind ticket`. The layout and the one already-planned ticket are held constant so that every measured call asks the model exactly the same question: choose ticket T2. Nothing here is built; it is planning input.",
+  "layout": [
+    "pyproject.toml",
+    "src/example/__init__.py",
+    "src/example/store.py",
+    "src/example/api.py",
+    "tests/test_smoke.py",
+    "tests/test_store.py",
+    "tests/test_api.py"
+  ],
+  "tickets": [
+    {
+      "id": "T1",
+      "title": "Create the package skeleton and test runner",
+      "priority": 1,
+      "files": ["pyproject.toml", "tests/test_smoke.py"],
+      "blocked_by": [],
+      "acceptance": "pytest -q tests/test_smoke.py",
+      "goal": "The repository installs and runs an empty test suite.",
+      "details": "Create pyproject.toml declaring the package name, the src layout and pytest as the only dev dependency, per the Setup section of the README. Add tests/test_smoke.py with one trivial test so the runner is proven before any feature depends on it."
+    }
+  ]
+}

@@ -7,7 +7,8 @@
 #   ./verify-planner.sh
 #
 # What is being verified is not "does the model sound sensible" but "does the
-# artefact parse". Four independent questions:
+# artefact parse", and "does the SCRIPT stay in control when the model does not
+# cooperate". Seven independent questions:
 #
 #   1. Does the validator agree with ORCHESTRATOR.md?  A validator that checks
 #      for the wrong section name would pass a plan the dispatcher cannot read --
@@ -20,8 +21,19 @@
 #      plans must cover the full check list -- no dead checks.
 #   4. Does the emitter's own output satisfy the validator?  Renderer and parser
 #      are separate implementations, so the round-trip proves they agree.
+#   5. Does `p3-plan.py plan` -- the script-owned loop -- do the right thing when
+#      the model misbehaves?  A mock endpoint returns canned replies: prose
+#      instead of JSON, truncated JSON, a five-ticket array, schema violations,
+#      a mid-run 500. The loop must retry with the error fed back, then STOP
+#      LOUDLY. It must never skip a ticket and never invent one.
+#   6. Can the ledger hold a ticket the model did not return?  Every ticket
+#      record carries the sha256 of the reply it was built from; the harness
+#      re-derives the fields from what the mock actually sent and compares.
+#      A deliberately fabricated ledger row must be caught by that same check.
+#   7. Does the loop terminate?  On coverage, on a stall, and on a budget.
 #
-# No credentials and no network: everything runs against fixtures.
+# No credentials and no live model: everything runs against fixtures and a mock
+# endpoint on loopback. The only network use is that loopback socket.
 
 set -uo pipefail
 
@@ -30,11 +42,20 @@ SKILL="$HERE_DIR/hermes-skills/autonomous-ai-agents/orchestrator-planner"
 LINT="$SKILL/scripts/p3-plan-lint.py"
 PLAN="$SKILL/scripts/p3-plan.py"
 GOOD="$HERE_DIR/p3-fixtures/good"
+SPECDIR="$HERE_DIR/p3-fixtures/spec"
+REPLIES="$HERE_DIR/p3-fixtures/model/replies.json"
 CONTRACT="$HERE_DIR/ORCHESTRATOR.md"
 SPEC_ISSUE=7
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/p3-planner-XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+cleanup() {
+  if [ -n "${MOCK_PID:-}" ]; then
+    kill "$MOCK_PID" 2>/dev/null
+    wait "$MOCK_PID" 2>/dev/null    # reap it, so bash does not print "Terminated"
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
 
 pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; pass=$((pass+1)); }
@@ -46,7 +67,7 @@ lint() { python3 "$LINT" "$@"; }
 failed_ids() { lint "$@" --json 2>/dev/null | python3 -c \
   'import json,sys; print("\n".join(json.load(sys.stdin)["failed"]))'; }
 
-for f in "$LINT" "$PLAN" "$CONTRACT"; do
+for f in "$LINT" "$PLAN" "$CONTRACT" "$REPLIES" "$SPECDIR/spec.md" "$SPECDIR/readme.md"; do
   [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }
 done
 [ -d "$GOOD" ] || { echo "missing fixtures: $GOOD" >&2; exit 2; }
@@ -363,6 +384,466 @@ reject "a ticket with no files" "no files listed" --id T2 --title "Think about i
 n=$(grep -c '"kind": "ticket"' "$RJ/tickets.jsonl")
 [ "$n" -eq 1 ] && ok "the ledger still holds only the one valid ticket" \
                || bad "$n tickets in the ledger; a refused row was written anyway"
+
+################################################################################
+echo
+echo "MOCK MODEL  (the script-owned loop, driven by canned replies)"
+################################################################################
+# `p3-plan.py plan` runs the whole loop itself and calls the model only for
+# decisions. Everything below drives that loop against an OpenAI-compatible
+# endpoint on loopback that returns whatever p3-fixtures/model/replies.json says
+# for the scenario currently selected. No live model, no GitHub, no credentials.
+
+MOCK_STATE="$WORK/mock"
+mkdir -p "$MOCK_STATE" "$WORK/cwd"
+
+cat > "$WORK/mock-model.py" <<'PY'
+#!/usr/bin/env python3
+"""A canned OpenAI-compatible chat endpoint.
+
+It reads the scenario name from a file on every request, so a suite can change
+the model's behaviour mid-run -- which is how the "interrupted run resumes"
+case is built without restarting anything.
+
+Which reply is served is decided by reading the prompt the planner sent, the
+same way a human would: the layout call announces itself, and a ticket call
+names the ticket it is asking for. Every reply actually returned is appended to
+replies.jsonl, which is what the anti-fabrication suite checks the ledger
+against.
+"""
+import hashlib
+import json
+import os
+import re
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+REPLIES, STATE = sys.argv[1], sys.argv[2]
+DOC = json.load(open(REPLIES, encoding="utf-8"))["scenarios"]
+SERVED = {}          # (scenario, key) -> attempts served so far
+
+TICKET_RE = re.compile(r"This is ticket (T\d+)\.")
+
+
+def log(name, rec):
+    with open(os.path.join(STATE, name), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, sort_keys=True) + "\n")
+
+
+def scenario():
+    with open(os.path.join(STATE, "scenario"), encoding="utf-8") as fh:
+        return fh.read().strip()
+
+
+def decide(prompt):
+    if "TASK: choose the complete file layout" in prompt:
+        return "layout"
+    m = TICKET_RE.search(prompt)
+    return m.group(1) if m else "unknown"
+
+
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        if self.path != "/v1/chat/completions":
+            self.send_error(404, "only /v1/chat/completions is mocked")
+            return
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        prompt = "\n".join(m.get("content") or "" for m in body["messages"])
+        scen = scenario()
+        key = decide(prompt)
+        n = SERVED.get((scen, key), 0) + 1
+        SERVED[(scen, key)] = n
+        table = DOC.get(scen)
+        if table is None:
+            self.send_error(500, f"unknown scenario {scen!r}")
+            return
+        content = table.get(f"{key}#{n}", table.get(key, table.get("*")))
+        log("requests.jsonl", {"scenario": scen, "key": key, "attempt": n,
+                               "served": content is not None,
+                               "retry_turns": sum(1 for m in body["messages"]
+                                                  if m["role"] == "assistant")})
+        if content is None:
+            self.send_error(500, f"scenario {scen!r} has no reply for {key!r}")
+            return
+        if content == "__http500__":
+            self.send_error(500, "the mock endpoint is deliberately down")
+            return
+        log("replies.jsonl", {"scenario": scen, "key": key, "attempt": n,
+                              "sha256": hashlib.sha256(content.encode()).hexdigest(),
+                              "content": content})
+        payload = json.dumps({
+            "id": "mock", "object": "chat.completion", "model": body.get("model"),
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": content}}],
+        }).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+with open(os.path.join(STATE, "port"), "w", encoding="utf-8") as fh:
+    fh.write(str(srv.server_address[1]))
+srv.serve_forever()
+PY
+
+printf 'good\n' > "$MOCK_STATE/scenario"
+python3 "$WORK/mock-model.py" "$REPLIES" "$MOCK_STATE" &
+MOCK_PID=$!
+for _ in $(seq 1 50); do [ -s "$MOCK_STATE/port" ] && break; sleep 0.1; done
+MOCK_PORT="$(cat "$MOCK_STATE/port" 2>/dev/null || true)"
+if [ -n "$MOCK_PORT" ] && kill -0 "$MOCK_PID" 2>/dev/null; then
+  ok "mock model endpoint listening on loopback (no live model, no GPU)"
+else
+  bad "the mock model endpoint did not start - every suite below is meaningless"
+  echo; printf 'RESULT: %d passed, %d failed\n\n' "$pass" "$fail"; exit 1
+fi
+MOCK_URL="http://127.0.0.1:$MOCK_PORT/v1/chat/completions"
+
+# One planning run. Credentials are explicitly emptied: a --dry-run plan that
+# reads its spec from a file must never reach GitHub.
+plan_run() { # scenario run-name [extra args to `plan`]
+  local scen=$1 name=$2; shift 2
+  printf '%s\n' "$scen" > "$MOCK_STATE/scenario"
+  ( cd "$WORK/cwd" && env -u GITHUB_TOKEN -u TARGET_REPO_TOKEN \
+      P3_MODEL_URL="$MOCK_URL" P3_MODEL="mock-model" P3_MODEL_TIMEOUT=30 \
+      python3 "$PLAN" --plan-dir "$WORK/$name" plan \
+        --repo example-org/example-service --spec "$SPEC_ISSUE" \
+        --spec-file "$SPECDIR/spec.md" --readme-file "$SPECDIR/readme.md" \
+        --dry-run "$@" ) > "$WORK/$name.out" 2> "$WORK/$name.err"
+}
+tickets_in() { # run-name -> how many tickets its ledger holds
+  local f="$WORK/$1/tickets.jsonl"
+  [ -f "$f" ] || { echo 0; return; }
+  grep -c '"kind": "ticket"' "$f" || true    # grep prints 0 and exits 1 on no match
+}
+
+# --- a well-formed reply produces a conforming ticket ----------------------- #
+plan_run good run-good; rc=$?
+[ $rc -eq 0 ] && ok "a well-formed model reply drives the loop to completion (exit 0)" \
+              || { bad "the good scenario failed (exit $rc)"; sed 's/^/        /' "$WORK/run-good.err" | tail -20; }
+
+NGOOD=$(tickets_in run-good)
+[ "$NGOOD" -ge 3 ] \
+  && ok "the loop produced $NGOOD tickets from the mock's replies" \
+  || bad "only $NGOOD ticket(s) produced - the mock suites would pass vacuously"
+
+lint --fixtures "$WORK/run-good/fixtures" --parent "$SPEC_ISSUE" >/dev/null 2>&1 \
+  && ok "every ticket the loop produced satisfies the contract validator" \
+  || bad "the loop produced tickets its own validator rejects"
+
+grep -q "0 failed" "$WORK/run-good.out" \
+  && ok "the loop ran the validator itself and reported a clean plan" \
+  || bad "the loop did not report a validated plan"
+
+[ -z "$(ls -A "$WORK/cwd")" ] \
+  && ok "the run wrote nothing outside its plan directory (the model has no shell)" \
+  || bad "files appeared in the working directory: $(ls -A "$WORK/cwd" | tr '\n' ' ')"
+
+# A fence and a prose preamble are the model's own JSON, just dressed up.
+plan_run fenced run-fenced; rc=$?
+[ $rc -eq 0 ] && ok "a fenced reply with a preamble is accepted (the JSON is still the model's)" \
+              || bad "a fenced JSON reply defeated the parser (exit $rc)"
+
+################################################################################
+echo
+echo "MALFORMED REPLIES  (retry with the error fed back, then stop loudly)"
+################################################################################
+# The failure this whole design exists to prevent is a planner that fills a gap
+# it could not get an answer for. So: exhausting the retries must FAIL, not
+# skip, and not invent.
+
+for case in bad-json truncated-json json-array; do
+  plan_run "$case" "run-$case" --retries 2; rc=$?
+  err="$WORK/run-$case.err"
+  if [ $rc -eq 3 ]; then
+    ok "$case: the loop stopped loudly (exit 3) instead of continuing"
+  else
+    bad "$case: expected exit 3, got $rc"
+  fi
+  grep -q -- "--- last raw reply ---" "$err" \
+    && ok "$case: the raw reply is printed, so a human can see what was actually said" \
+    || bad "$case: the raw model reply was swallowed"
+  n=$(tickets_in "run-$case")
+  [ "$n" -eq 0 ] \
+    && ok "$case: no ticket was invented to fill the gap (ledger holds 0)" \
+    || bad "$case: $n ticket(s) in the ledger after an unusable reply"
+  [ ! -d "$WORK/run-$case/fixtures" ] \
+    && ok "$case: nothing was emitted" \
+    || bad "$case: issues were rendered from a plan that never validated"
+done
+
+# Retries must actually be spent, and the rejection must be sent BACK.
+att=$(python3 - "$MOCK_STATE/requests.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8")]
+rows = [r for r in rows if r["scenario"] == "bad-json" and r["key"] == "T1"]
+print(f'{len(rows)} {max((r["retry_turns"] for r in rows), default=0)}')
+PY
+)
+set -- $att
+[ "$1" -eq 3 ] \
+  && ok "the rejected decision was retried to the configured limit (3 attempts)" \
+  || bad "expected 3 attempts at the same decision, saw $1"
+[ "$2" -ge 1 ] \
+  && ok "the retry prompt carries the previous reply and the rejection reason" \
+  || bad "retries were sent as a fresh prompt - the parse error was not fed back"
+
+# ...and a first-attempt failure that the model then fixes must recover.
+plan_run retry-then-good run-retry --retries 2; rc=$?
+[ $rc -eq 0 ] \
+  && ok "a rejected first attempt followed by a correct one recovers (exit 0)" \
+  || bad "the retry path cannot succeed (exit $rc) - retries would be theatre"
+
+################################################################################
+echo
+echo "SCHEMA VIOLATIONS  (parseable JSON that is still not a ticket)"
+################################################################################
+# Each scenario returns ONE well-formed JSON object with exactly one defect, and
+# --retries 0 so the loop fails on the first reply. The run must be rejected AND
+# the message must name the actual defect: "exit non-zero" alone would be
+# satisfied by a planner that rejects everything.
+
+schema_case() { # scenario expected-substring-in-the-rejection
+  local scen=$1 want=$2
+  plan_run "$scen" "run-$scen" --retries 0; local rc=$?
+  local err="$WORK/run-$scen.err"
+  if [ $rc -eq 0 ]; then
+    bad "$scen: accepted a reply that violates the schema"
+  elif grep -qi -- "$want" "$err"; then
+    ok "$scen -> rejected: $(grep -o "rejected: .*" "$err" | head -1 | cut -c1-72)"
+  else
+    bad "$scen: rejected for the wrong reason: $(grep 'rejected:' "$err" | head -1)"
+  fi
+  local n; n=$(tickets_in "run-$scen")
+  [ "$n" -eq 0 ] || bad "$scen: a rejected ticket reached the ledger anyway"
+}
+
+schema_case schema-missing-files    "missing key 'files'"
+schema_case schema-empty-files      "no files listed"
+schema_case schema-prose-acceptance "prose"
+schema_case schema-two-priorities   "priority must be"
+schema_case schema-chained-acceptance "chains commands"
+schema_case schema-off-layout       "not in the recorded file layout"
+schema_case schema-touches-readme   "README"
+schema_case schema-long-title       "title must be"
+schema_case schema-thin-details     "details is too thin"
+schema_case schema-unknown-blocker  "does not exist yet"
+schema_case schema-foreign-acceptance "it cannot pass"
+
+################################################################################
+echo
+echo "TERMINATION  (the loop ends, three ways, and cannot spin)"
+################################################################################
+
+cov=$(python3 - "$WORK/run-good/tickets.jsonl" <<'PY'
+import json, sys
+layout, claimed, n = [], set(), 0
+for line in open(sys.argv[1], encoding="utf-8"):
+    r = json.loads(line)
+    if r.get("kind") == "layout":
+        layout = r["paths"]
+    elif r.get("kind") == "ticket":
+        n += 1
+        claimed |= set(r["files"])
+missing = [p for p in layout if p not in claimed]
+print(f'{len(layout)} {n} {",".join(missing) or "-"}')
+PY
+)
+set -- $cov
+[ "$3" = "-" ] \
+  && ok "the loop stopped because all $1 layout paths were claimed by $2 tickets" \
+  || bad "the loop stopped with paths unclaimed: $3"
+
+# A budget the plan cannot meet must fail, not quietly emit a partial plan.
+plan_run good run-budget --max-tickets 2; rc=$?
+[ $rc -eq 4 ] \
+  && ok "hitting the ticket budget with paths unclaimed fails (exit 4)" \
+  || bad "expected exit 4 on an unmet ticket budget, got $rc"
+grep -q "still unclaimed" "$WORK/run-budget.err" \
+  && ok "the budget failure names the paths no ticket claimed" \
+  || bad "the budget failure does not say what is missing"
+[ ! -d "$WORK/run-budget/fixtures" ] \
+  && ok "a plan that hit the budget emitted nothing" \
+  || bad "a partial plan was emitted"
+
+# A model that keeps proposing valid tickets which claim nothing new would spin
+# until the budget. The stall detector stops it much earlier.
+plan_run stall run-stall --max-stalls 2 --max-tickets 25; rc=$?
+[ $rc -eq 4 ] \
+  && ok "a non-converging model is stopped by the stall detector (exit 4)" \
+  || bad "expected exit 4 from the stall detector, got $rc"
+n=$(tickets_in run-stall)
+[ "$n" -le 4 ] \
+  && ok "the stall was caught after $n tickets, not after the 25-ticket budget" \
+  || bad "the stall detector let $n tickets through"
+
+################################################################################
+echo
+echo "ANTI-FABRICATION  (the ledger holds only what the model returned)"
+################################################################################
+# This is the property the whole redesign is for: an earlier planner printed a
+# confident five-ticket plan when the ledger held two. Every ticket record
+# carries the sha256 of the reply it was built from, so the claim is checkable
+# rather than assertable -- and the check is fired at a fabricated row to prove
+# it can fail.
+
+cat > "$WORK/antifab.py" <<'PY'
+import hashlib, json, sys
+
+ledger, replies = sys.argv[1], sys.argv[2]
+FIELDS = ("title", "priority", "files", "blocked_by", "acceptance", "goal", "details")
+
+by_sha = {}
+for line in open(replies, encoding="utf-8"):
+    r = json.loads(line)
+    by_sha[r["sha256"]] = r["content"]
+
+problems, n = [], 0
+for line in open(ledger, encoding="utf-8"):
+    rec = json.loads(line)
+    if rec.get("kind") != "ticket":
+        continue
+    n += 1
+    sha = rec.get("raw_sha256")
+    if sha is None:
+        problems.append(f'{rec["id"]}: no provenance -- it records no model reply')
+        continue
+    if sha not in by_sha:
+        problems.append(f'{rec["id"]}: sha {sha[:12]} matches no reply the model sent')
+        continue
+    # Not just "a reply existed" -- the FIELDS must be the ones in that reply.
+    raw = by_sha[sha]
+    s, e = raw.find("{"), raw.rfind("}")
+    sent = json.loads(raw[s:e + 1])
+    for f in FIELDS:
+        want = sent.get(f)
+        if isinstance(want, str):
+            want = want.strip()
+        if want != rec.get(f):
+            problems.append(f'{rec["id"]}.{f} is not what the model sent')
+print(json.dumps({"tickets": n, "problems": problems}))
+PY
+
+af=$(python3 "$WORK/antifab.py" "$WORK/run-good/tickets.jsonl" "$MOCK_STATE/replies.jsonl")
+nprob=$(printf '%s' "$af" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d["problems"]))')
+nt=$(printf '%s' "$af" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tickets"])')
+[ "$nprob" -eq 0 ] \
+  && ok "all $nt ledger tickets re-derive, field for field, from replies the model actually sent" \
+  || bad "ledger tickets do not match what the model sent: $af"
+
+# Positive control for the check itself: fabricate a ticket the way the old
+# planner did -- a plausible row that no reply ever contained.
+cp "$WORK/run-good/tickets.jsonl" "$WORK/fabricated.jsonl"
+python3 - "$WORK/fabricated.jsonl" <<'PY'
+import json, sys
+row = {"kind": "ticket", "id": "T9", "title": "Add the CSV export endpoint",
+       "priority": 2, "files": ["src/example/export.py"], "blocked_by": [],
+       "acceptance": "pytest -q tests/test_export.py",
+       "goal": "Records can be exported as CSV.",
+       "details": "A perfectly plausible ticket that no model reply ever contained.",
+       "raw_sha256": "0" * 64, "origin": "model"}
+open(sys.argv[1], "a", encoding="utf-8").write(json.dumps(row, sort_keys=True) + "\n")
+PY
+fab=$(python3 "$WORK/antifab.py" "$WORK/fabricated.jsonl" "$MOCK_STATE/replies.jsonl")
+printf '%s' "$fab" | grep -q "matches no reply the model sent" \
+  && ok "a fabricated ticket IS caught by that check (so the check can fail)" \
+  || bad "the anti-fabrication check accepted an invented ticket: $fab"
+
+# And the audit trail must agree with the ledger: one accepted reply per ticket.
+acc=$(python3 - "$WORK/run-good/tickets.jsonl" <<'PY'
+import json, sys
+t = a = 0
+for line in open(sys.argv[1], encoding="utf-8"):
+    r = json.loads(line)
+    if r.get("kind") == "ticket":
+        t += 1
+    elif r.get("kind") == "modelcall" and r["call"].startswith("ticket") and not r["error"]:
+        a += 1
+print(f"{t} {a}")
+PY
+)
+set -- $acc
+[ "$1" -eq "$2" ] \
+  && ok "one accepted model reply per ticket in the ledger ($1 = $2)" \
+  || bad "$1 tickets but $2 accepted ticket replies - the two do not agree"
+
+################################################################################
+echo
+echo "RESUME  (an interrupted run continues, it does not re-plan)"
+################################################################################
+# The endpoint dies after two tickets. The ledger keeps them; a second run must
+# pick up at ticket three, re-ask nothing it already has, and duplicate nothing.
+
+plan_run interrupt run-resume --retries 1; rc=$?
+[ $rc -ne 0 ] && ok "the run died when the endpoint went away (exit $rc)" \
+              || bad "the run reported success despite a dead endpoint"
+first=$(tickets_in run-resume)
+[ "$first" -eq 2 ] \
+  && ok "the two tickets decided before the failure survived in the ledger" \
+  || bad "expected 2 tickets in the interrupted ledger, found $first"
+cp "$WORK/run-resume/tickets.jsonl" "$WORK/resume-before.jsonl"
+
+plan_run good run-resume; rc=$?
+[ $rc -eq 0 ] && ok "the resumed run completed (exit 0)" \
+              || { bad "the resumed run failed (exit $rc)"; tail -5 "$WORK/run-resume.err" | sed 's/^/        /'; }
+grep -q "resuming example-org/example-service" "$WORK/run-resume.out" \
+  && ok "the resumed run said it was resuming rather than starting over" \
+  || bad "the resumed run did not announce a resume"
+grep -q "layout already recorded" "$WORK/run-resume.out" \
+  && ok "the layout was not re-asked - one layout call per plan, ever" \
+  || bad "the resumed run asked the model for the layout a second time"
+
+dup=$(python3 - "$WORK/run-resume/tickets.jsonl" "$WORK/resume-before.jsonl" <<'PY'
+import json, sys
+def tickets(p):
+    return [json.loads(l) for l in open(p, encoding="utf-8")
+            if json.loads(l).get("kind") == "ticket"]
+after, before = tickets(sys.argv[1]), tickets(sys.argv[2])
+ids = [t["id"] for t in after]
+dupes = sorted({i for i in ids if ids.count(i) > 1})
+same = all(a["title"] == b["title"] and a["files"] == b["files"]
+           for a, b in zip(after, before))
+print(f'{len(after)} {",".join(dupes) or "-"} {"same" if same else "REWRITTEN"}')
+PY
+)
+set -- $dup
+[ "$2" = "-" ] && ok "no ticket id appears twice after resuming ($1 tickets)" \
+               || bad "resuming duplicated tickets: $2"
+[ "$3" = "same" ] && ok "the tickets decided before the interruption were not re-decided" \
+                  || bad "resuming rewrote work that was already in the ledger"
+[ "$1" -eq "$NGOOD" ] \
+  && ok "the resumed plan reaches the same size as an uninterrupted one ($1)" \
+  || bad "resumed plan has $1 tickets, an uninterrupted one has $NGOOD"
+
+################################################################################
+echo
+echo "POSITIVE CONTROL FOR THESE SUITES"
+################################################################################
+# If the mock never returns anything usable, the loop must fail. A suite that
+# still reports success against `never-valid` is measuring nothing at all --
+# this repo has shipped a probe that could not fail once already.
+
+plan_run never-valid run-control --retries 1; rc=$?
+[ $rc -ne 0 ] \
+  && ok "a model that never answers usefully produces a FAILED run (exit $rc)" \
+  || bad "the loop reported success from a model that answered nothing - these suites are vacuous"
+[ "$(tickets_in run-control)" -eq 0 ] \
+  && ok "...and an empty ledger, not a plausible-looking plan" \
+  || bad "tickets appeared from a model that returned no usable reply"
+
+nscen=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["scenarios"]))' "$REPLIES")
+served=$(python3 -c '
+import json,sys
+print(len({json.loads(l)["scenario"] for l in open(sys.argv[1], encoding="utf-8")}))' "$MOCK_STATE/requests.jsonl")
+[ "$served" -ge "$nscen" ] \
+  && ok "every one of the $nscen canned scenarios was actually exercised" \
+  || bad "only $served of $nscen scenarios were used - some canned replies are dead fixtures"
 
 echo
 printf 'RESULT: %d passed, %d failed\n\n' "$pass" "$fail"
