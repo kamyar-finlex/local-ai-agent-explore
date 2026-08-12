@@ -478,6 +478,47 @@ def check_files(paths):
     return None
 
 
+def install_declared_dependencies(cfg, repo_dir, rep):
+    """Install what the PROJECT declares, after writing files and before acceptance.
+
+    Without this, any ticket whose acceptance command imports a third-party
+    package fails with an import error no amount of retrying can fix - observed
+    on a real ticket that specified FastAPI while nothing in the pipeline ever
+    installed it. The worker then spent its whole retry budget re-asking the
+    model to fix code that was already correct.
+
+    The distinction that keeps this inside the contract: the worker installs
+    what the repository's own manifest declares. It never invents a dependency,
+    and a package the project has not declared is still refused.
+
+    A failure here is reported, not worked around. Best-effort in the sense that
+    a project with no manifest is normal and silent; a manifest that will not
+    install is a real problem the human should see in the log.
+    """
+    manifests = [
+        (["pip", "install", "-q", "--disable-pip-version-check",
+          "-r", "requirements.txt"], "requirements.txt"),
+        (["pip", "install", "-q", "--disable-pip-version-check", "."], "pyproject.toml"),
+    ]
+    for cmd, fname in manifests:
+        path = os.path.join(repo_dir, fname)
+        if not os.path.isfile(path):
+            continue
+        rep.heartbeat(f"installing dependencies from {fname}")
+        rc, out = run(cmd, cwd=repo_dir, timeout=cfg.get("install_timeout", 600))
+        if rc == 0:
+            say(f"  installed dependencies from {fname}")
+        else:
+            # Not fatal on its own: the acceptance command is the real verdict,
+            # and a manifest can fail to install for reasons that do not matter
+            # to this ticket. But say so, or a later import error looks unrelated.
+            say(f"  WARNING: `{' '.join(cmd)}` -> exit {rc} (acceptance will show the consequence)")
+            for line in (out or "").strip().splitlines()[-3:]:
+                say(f"    {line}")
+        return
+    say("  no dependency manifest present; nothing to install")
+
+
 def check_acceptance(cmd):
     """One runnable command, nothing else - same rules the planner is held to."""
     if not cmd.strip():
@@ -1264,6 +1305,8 @@ def main(argv=None):
     # ---- 4. write, then run the acceptance command -------------------------- #
     write_files(repo_dir, produced, declared)
     say(f"  wrote {len(produced)} file(s)")
+
+    install_declared_dependencies(cfg, repo_dir, rep)
 
     accept_cmd = shlex.split(ticket["acceptance"])
     failure = None

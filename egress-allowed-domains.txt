@@ -27,3 +27,19 @@ github.com
 #                                  write channel; add it only knowingly.
 #   npm / PyPI / RubyGems         - bake dependencies into the worker image
 #                                  instead of widening this file.
+
+# workers: installing the target project's declared dependencies.
+#
+# Added deliberately, and it is the widest hole in this allowlist. Everything
+# else here is a specific service we control or review; PyPI is a public index
+# from which a worker can fetch and EXECUTE arbitrary third-party code. A
+# typosquatted or compromised package runs inside the worker with its token.
+#
+# The narrower alternatives, for the record: bake the project's dependencies
+# into the worker image at BUILD time, outside the sandbox, so nothing is
+# fetched at run time; or pin a hash-locked manifest and install with
+# --require-hashes. Both were passed over here because the planner chooses the
+# stack after the image is built, which makes a per-project image the real
+# answer rather than a quick one.
+pypi.org
+files.pythonhosted.org

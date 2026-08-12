@@ -404,3 +404,37 @@ and a removed host is checked for being refused.
 Tested on Docker Desktop 29.3.1 (macOS, Apple Silicon), squid 6.9, images 21 MB and
 67 MB, ~0.2 GB of the VM's 12 GB free disk. Both `p2-*` images are removed by
 `teardown`.
+
+## PyPI is on the allowlist, and it is the widest hole in it
+
+`pypi.org` and `files.pythonhosted.org` were added so workers can install the
+dependencies a target project declares. This was a deliberate decision and it
+costs something real, so it is recorded rather than buried.
+
+Every other entry is a specific service whose content we control or review.
+**PyPI is a public index from which a worker fetches and then EXECUTES arbitrary
+third-party code**, with its repository token in its environment. A typosquatted
+name or a compromised release runs inside the worker. The domain allowlist cannot
+see any of that — it sees `CONNECT files.pythonhosted.org:443`, exactly as it
+sees a legitimate install.
+
+Why it was added anyway: without it, any ticket whose acceptance command imports a
+third-party package is **valid by every mechanical check and impossible to
+execute**. That happened on a real ticket — the planner chose FastAPI, nothing in
+the pipeline could install it, and the worker spent its entire retry budget
+re-asking the model to fix code that was already correct.
+
+The narrower options, for whoever revisits this:
+
+- **Bake dependencies into the worker image at build time**, outside the sandbox,
+  so nothing is fetched at run time. This is the right answer, and it needs a
+  per-project image built from that project's manifest — which is awkward here
+  only because the planner chooses the stack *after* the image exists.
+- **Hash-locked installs** (`--require-hashes` against a committed lock file), so
+  a compromised release cannot substitute itself silently.
+- **A pull-through cache or internal index**, allowlisting that instead of PyPI,
+  which puts a reviewable boundary back in the path.
+
+What this does *not* change: the worker still cannot add a dependency the project
+has not declared, still cannot write outside its ticket's declared files, and
+still has no route anywhere except the four allowlisted hosts.
