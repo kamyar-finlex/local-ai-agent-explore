@@ -14,11 +14,15 @@
 FROM python:3.12-alpine
 
 # git for branches and pushes; ca-certificates so TLS through the proxy works;
+# setuptools and wheel are here so `pip install --no-build-isolation .` works
+# without reaching the index. With isolation ON, pip fetches the build backend in
+# a subprocess that does not inherit the proxy reliably; with isolation OFF and no
+# setuptools present, the build has no backend at all. Shipping it settles both.
 # curl for the REST calls that open a pull request. No gh CLI: it is a large
 # dependency for one API call the worker can make with curl or urllib, and this
 # Docker VM has limited disk.
 RUN apk add --no-cache git curl ca-certificates \
- && pip install --no-cache-dir pytest \
+ && pip install --no-cache-dir pytest setuptools wheel \
  && adduser -D -u 10001 worker
 
 # The proxy wiring is baked into the IMAGE rather than passed at spawn time.
