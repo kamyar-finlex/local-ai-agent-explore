@@ -7,8 +7,9 @@ RUN apk add --no-cache git curl python3 ca-certificates
 
 # The proxy wiring is baked into the IMAGE rather than passed at spawn time.
 # The dispatcher builds every container-create body from a fixed template that
-# contains no Env key at all - which is exactly why it is safe - so a spawned
-# worker inherits nothing from its caller. Without this, a worker can reach the
+# injects only allowlisted names with values from its own environment - the
+# safety is that the env is dispatcher-built, never caller-supplied - so a
+# spawned worker inherits nothing from whoever asked for it. Without this, a worker can reach the
 # model gate (plaintext, direct) but has no idea the egress proxy exists and
 # every push to GitHub fails with an unhelpful DNS error.
 #

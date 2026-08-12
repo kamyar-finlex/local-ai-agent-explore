@@ -32,12 +32,30 @@
 #                 ./verify-spawning.sh proxy, then ./p1-spawn-teardown.sh.
 
 set -uo pipefail
+HERE_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Machine-specific values (TARGET_REPO, TARGET_REPO_TOKEN) live in the gitignored
+# local.env. The ENV-INJECTION suite needs a real credential for ONE check - the
+# positive control that a worker can actually clone the target repository - and a
+# real repo name to clone. Without local.env that single check is skipped loudly
+# and everything else still runs.
+# shellcheck source=/dev/null
+[ -f "$HERE_DIR/local.env" ] && . "$HERE_DIR/local.env"
+
 DISP="${DISPATCHER_NAME:-hermes-dispatcher}"
 AGENT_NAME="${AGENT_NAME:-hermes}"
 # The rejected option (a) rig is still p1-*, and still on its own network.
 PROXY=p1-socket-proxy
 PROXY_NET=p1-spawn-net
 ALPINE=alpine:latest
+# The ENV-INJECTION suite stands up its OWN dispatcher, because the properties it
+# has to prove need a configuration the composed dispatcher cannot have at once:
+# an allowlisted variable that IS set, one that is deliberately NOT set, and a
+# reserved name the allowlist must refuse. Namespaced p7-* and torn down.
+P7DISP=p7-env-dispatcher
+P7PREFIX=p7-w-
+P7LABEL=p7-scratch-worker
+P7WORK_SIZE=256m
+P7UNSET=P7_UNSET_ON_PURPOSE
 
 TARGET="${1:-dispatcher}"
 
@@ -45,6 +63,12 @@ pass=0; fail=0
 ok()   { printf '  \033[32mPASS\033[0m  %s\n' "$1"; pass=$((pass+1)); }
 bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fail=$((fail+1)); }
 note() { printf '        %s\n' "$1"; }
+
+# Anything this script prints goes through here. The suite handles a real
+# credential; a captured PASS/FAIL transcript is exactly the sort of thing that
+# ends up pasted into a ticket.
+SECRET="${TARGET_REPO_TOKEN:-}"
+scrub() { if [ -n "$SECRET" ]; then sed "s|${SECRET}|<redacted>|g"; else cat; fi; }
 
 # --- issue an attacker request from a throwaway container on the rig network ---
 # It has no socket mount; its entire capability is "reach the mechanism's port".
@@ -78,6 +102,19 @@ disp_call() {  # METHOD PATH [BODY] [TOKEN|__NONE__]
 
 hins() { docker inspect "$1" --format "$2" 2>/dev/null; }
 denv() { hins "$1" '{{range .Config.Env}}{{println .}}{{end}}' | sed -n "s/^$2=//p" | head -1; }
+# Is the variable PRESENT at all? Distinct from denv returning empty, which is the
+# whole point of the "unset means omitted, not empty" requirement.
+dhas() { hins "$1" '{{range .Config.Env}}{{println .}}{{end}}' | grep -q "^$2=" && echo yes || echo no; }
+# Does ANY entry equal NAME=VALUE? Deliberately not "the first entry", because the
+# naive way to leak a caller's env is to APPEND it - .Config.Env then holds the
+# dispatcher's value first and the attacker's second, and a check that reads only
+# the first occurrence would report a pass while the process sees the attacker's.
+eany() { hins "$1" '{{range .Config.Env}}{{println .}}{{end}}' | grep -qxF -- "$2=$3" && echo yes || echo no; }
+enames()  { hins "$1" '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^\([^=]*\)=.*/\1/p' | sort -u; }
+inames()  { docker image inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+            | sed -n 's/^\([^=]*\)=.*/\1/p' | sort -u; }
+# The Tmpfs map as "path=opts" lines, so a rename or a resize is visible.
+dtmpfs() { hins "$1" '{{range $p,$o := .HostConfig.Tmpfs}}{{$p}}={{$o}}{{"\n"}}{{end}}' | sed '/^$/d' | sort; }
 ensure_bystander() {  # a fresh unrelated, unlabelled-as-worker container
   docker rm -f "$BYSTANDER" >/dev/null 2>&1 || true
   docker run -d --name "$BYSTANDER" --network "$NET" --label role=innocent-bystander \
@@ -166,6 +203,14 @@ suite_proxy() {
   if [ "$CODE" = "200" ] && printf '%s' "$BODY" | grep -q 'hermes'; then
     bad "full container INVENTORY disclosed (200) - lists hermes/ollama-gate/etc"
   else ok "container inventory not disclosed ($CODE)"; fi
+  # Now that the mechanism's job includes handing workers a credential, the read
+  # surface is not merely an information leak - it is a credential oracle. The
+  # proxy's `/containers` ACL covers reads, so a caller can inspect the very
+  # container that holds the bearer token and lift it out of .Config.Env.
+  proxy_call GET "/containers/p1-dispatcher/json"
+  if [ "$CODE" = "200" ] && printf '%s' "$BODY" | grep -q 'DISPATCH_TOKEN='; then
+    bad "CREDENTIAL DISCLOSED: read DISPATCH_TOKEN out of another container's .Config.Env (200)"
+  else ok "cannot read another container's environment ($CODE)"; fi
 
   echo
   echo "CATEGORY LIMITS  (what the path filter DOES still block - to be fair)"
@@ -203,11 +248,20 @@ suite_dispatcher() {
   WORKER_IMAGE=$(denv "$DISP" WORKER_IMAGE); WORKER_IMAGE="${WORKER_IMAGE:-$ALPINE}"
   NET=$(denv "$DISP" WORKER_NETWORK)
   NET="${NET:-$(hins "$DISP" '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')}"
+  # The env/workspace configuration, likewise read off the running container. An
+  # attack payload that guessed the wrong workspace path would "fail to rename
+  # it" for the wrong reason.
+  ALLOW_RAW=$(denv "$DISP" WORKER_ENV_ALLOWLIST); ALLOW_RAW="${ALLOW_RAW:-GITHUB_TOKEN,TARGET_REPO}"
+  ALLOW_NAMES=$(printf '%s' "$ALLOW_RAW" | tr ',' ' ')
+  WPATH=$(denv "$DISP" WORKER_WORK_PATH);  WPATH="${WPATH:-/work}"
+  WSIZE=$(denv "$DISP" WORKER_WORK_SIZE);  WSIZE="${WSIZE:-384m}"
+  TMPSIZE=8m
   BYSTANDER="${PREFIX}NOT-a-worker-bystander"
   # A bystander whose name carries the worker prefix is the harder case: it
   # proves the guard is the LABEL, not the name.
   CTL="${PREFIX}ctl"; SMUGGLE="${PREFIX}attack-smuggle"
   note "config read from $DISP: prefix=$PREFIX label=$LABEL_KEY=$LABEL_VALUE net=$NET image=$WORKER_IMAGE"
+  note "env allowlist=$ALLOW_RAW  workspace=$WPATH size=$WSIZE"
   cleanup_workers; docker rm -f "$BYSTANDER" >/dev/null 2>&1; ensure_bystander
 
   echo
@@ -241,9 +295,18 @@ suite_dispatcher() {
   fi
 
   echo
-  echo "BODY-VALIDATION  (smuggled HostConfig must never reach Docker)"
+  echo "BODY-VALIDATION  (smuggled HostConfig, Env and Tmpfs must never reach Docker)"
+  # One request that tries everything at once. Since the dispatcher CONSTRUCTS the
+  # create body, every one of these fields is simply never read - so the request
+  # is accepted (201) and the proof is what the created container looks like from
+  # the host. A 4xx here would be a weaker result and would also mean the suite
+  # stopped short of body validation, which is why that case is a FAIL below.
+  #
+  # The env half of the payload is the new attack surface: the dispatcher now
+  # injects credentials, so a caller that could name, add or override a variable
+  # would have turned the injection point into a credential channel.
   docker rm -f "$SMUGGLE" >/dev/null 2>&1 || true
-  disp_call POST "/spawn" "{\"name\":\"$SMUGGLE\",\"cmd\":[\"sleep\",\"60\"],\"image\":\"mongo:7\",\"Privileged\":true,\"HostConfig\":{\"Binds\":[\"/:/host:rw\",\"/var/run/docker.sock:/var/run/docker.sock\"],\"Privileged\":true,\"NetworkMode\":\"host\",\"PidMode\":\"host\",\"CapAdd\":[\"ALL\"]}}"
+  disp_call POST "/spawn" "{\"name\":\"$SMUGGLE\",\"cmd\":[\"sleep\",\"60\"],\"image\":\"mongo:7\",\"Privileged\":true,\"Env\":[\"EVIL_INJECTED=1\",\"GITHUB_TOKEN=attacker-controlled\",\"TARGET_REPO=attacker/repo\",\"LD_PRELOAD=/tmp/evil.so\"],\"env\":{\"EVIL_LOWERCASE\":\"1\"},\"environment\":[\"EVIL_COMPOSE_STYLE=1\"],\"WorkingDir\":\"/attacker\",\"workspace\":\"/hostile\",\"work_path\":\"/hostile\",\"WORKER_WORK_PATH\":\"/hostile\",\"WORKER_WORK_SIZE\":\"4g\",\"work_size\":\"4g\",\"workspace_size\":\"4g\",\"WORKER_ENV_ALLOWLIST\":\"DISPATCH_TOKEN\",\"Tmpfs\":{\"/hostile\":\"size=4g\"},\"HostConfig\":{\"Binds\":[\"/:/host:rw\",\"/var/run/docker.sock:/var/run/docker.sock\"],\"Privileged\":true,\"NetworkMode\":\"host\",\"PidMode\":\"host\",\"CapAdd\":[\"ALL\"],\"Tmpfs\":{\"/hostile\":\"size=4g\",\"$WPATH\":\"size=4g\",\"/tmp\":\"size=4g\"},\"ReadonlyRootfs\":false}}"
   if [ "$CODE" != "201" ]; then
     bad "smuggle attempt returned $CODE, not 201 - the suite did not reach body validation ($BODY)"
   else
@@ -258,6 +321,74 @@ suite_dispatcher() {
     [ "$netm" != "host" ]         && ok "network not host (NetworkMode=$netm)"       || bad "SMUGGLED NetworkMode:host TOOK EFFECT"
     [ "$pidm" != "host" ]         && ok "pid ns not host (PidMode='${pidm:-<empty>}')" || bad "SMUGGLED PidMode:host TOOK EFFECT"
     [ "$img" = "$WORKER_IMAGE" ]  && ok "image forced to $WORKER_IMAGE (not caller's mongo:7)" || bad "SMUGGLED image TOOK EFFECT: $img"
+    [ "$(hins "$SMUGGLE" '{{.HostConfig.ReadonlyRootfs}}')" = "true" ] \
+      && ok "rootfs still read-only (caller's ReadonlyRootfs:false ignored)" \
+      || bad "SMUGGLED ReadonlyRootfs:false TOOK EFFECT"
+
+    # --- the env half -----------------------------------------------------
+    # Names the caller tried to add outright.
+    for evil in EVIL_INJECTED EVIL_LOWERCASE EVIL_COMPOSE_STYLE LD_PRELOAD; do
+      [ "$(dhas "$SMUGGLE" "$evil")" = "no" ] \
+        && ok "caller-supplied Env had no effect ($evil absent from the worker)" \
+        || bad "CALLER-SUPPLIED ENV TOOK EFFECT: $evil is set in the worker"
+    done
+    # PATH gets its OWN spawn. It always exists (the image sets it), so the
+    # question is whether the caller could REPLACE it - and a successful override
+    # breaks the container's own entrypoint, which would abort the rest of this
+    # battery if it shared the worker above. Failing to start is itself a catch.
+    PATHPROBE="${PREFIX}attack-path"
+    docker rm -f "$PATHPROBE" >/dev/null 2>&1 || true
+    disp_call POST "/spawn" "{\"name\":\"$PATHPROBE\",\"cmd\":[\"sleep\",\"30\"],\"Env\":[\"PATH=/attacker/bin\"]}"
+    if [ "$CODE" != "201" ]; then
+      bad "PATH override changed the outcome of /spawn ($CODE) - the caller's Env reached Docker"
+    else
+      [ "$(eany "$PATHPROBE" PATH /attacker/bin)" = "no" ] \
+        && ok "caller could not override PATH (still the image's)" \
+        || bad "CALLER OVERRODE PATH - process hijack"
+    fi
+    docker rm -f "$PATHPROBE" >/dev/null 2>&1 || true
+    # An allowlisted name is the sharpest case: the caller names a variable the
+    # dispatcher does inject and supplies its own value. Whatever the dispatcher
+    # is configured with, the worker must never hold the caller's string ANYWHERE
+    # in its env.
+    for al in $ALLOW_NAMES; do
+      want=$(denv "$DISP" "$al")
+      if [ "$(eany "$SMUGGLE" "$al" attacker-controlled)" = "yes" ] || \
+         [ "$(eany "$SMUGGLE" "$al" attacker/repo)" = "yes" ]; then
+        bad "CALLER OVERRODE $al - the worker holds the caller's value"
+      elif [ "$(dhas "$SMUGGLE" "$al")" = "no" ] && [ -z "$want" ]; then
+        ok "caller could not add $al (unset in the dispatcher, so absent - not caller's value)"
+      elif [ "$(denv "$SMUGGLE" "$al")" = "$want" ] && [ -n "$want" ]; then
+        ok "caller could not override $al (worker holds the dispatcher's value)"
+      else
+        bad "$al is neither the dispatcher's value nor absent - unexplained"
+      fi
+    done
+    # A variable that appears twice is the signature of "the caller's env was
+    # merged in", whichever copy the kernel ends up handing the process.
+    etot=$(hins "$SMUGGLE" '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^\([^=]*\)=.*/\1/p' | wc -l | tr -d ' ')
+    euniq=$(enames "$SMUGGLE" | wc -l | tr -d ' ')
+    [ "$etot" = "$euniq" ] && ok "no duplicated variable names ($euniq of $etot) - nothing was merged in" \
+                           || bad "DUPLICATED env names ($euniq unique of $etot) - a second value was merged in"
+    # No variable at all beyond what the IMAGE bakes in and what the dispatcher's
+    # own allowlist permits. This is the check that catches a future "just pass
+    # the request's env through" regression even for a name nobody thought of.
+    extra=$( { enames "$SMUGGLE"; inames "$WORKER_IMAGE"; inames "$WORKER_IMAGE"; } \
+             | sort | uniq -u | grep -vx -F -e PATH $(printf -- '-e %s ' $ALLOW_NAMES) | tr '\n' ' ')
+    [ -z "$extra" ] && ok "worker env is image-baked + allowlist only (no extra names)" \
+                    || bad "UNEXPECTED env names in the worker: $extra"
+
+    # --- the workspace half ----------------------------------------------
+    tm=$(dtmpfs "$SMUGGLE" | tr '\n' ' ')
+    printf '%s' "$tm" | grep -q "/hostile" \
+      && bad "CALLER ADDED A TMPFS AT ITS OWN PATH: $tm" \
+      || ok "caller could not rename/add a workspace path (Tmpfs: ${tm% })"
+    printf '%s' "$tm" | grep -q "4g" \
+      && bad "CALLER RESIZED A TMPFS: $tm" \
+      || ok "caller could not change a tmpfs size (still size=$WSIZE / $TMPSIZE)"
+    [ "$(hins "$SMUGGLE" '{{.Config.WorkingDir}}')" = "$WPATH" ] \
+      && ok "WorkingDir is the dispatcher's $WPATH (not caller's /attacker)" \
+      || bad "SMUGGLED WorkingDir TOOK EFFECT: $(hins "$SMUGGLE" '{{.Config.WorkingDir}}')"
     docker rm -f "$SMUGGLE" >/dev/null 2>&1 || true
   fi
 
@@ -306,8 +437,227 @@ suite_dispatcher() {
   disp_call GET "/containers/json" ""
   [ "$CODE" = "404" ] && ok "no inventory disclosure (404)" || bad "/containers/json returned $CODE, expected 404"
 
+  echo
+  echo "WORKSPACE  (one tmpfs, ours, writable - and nothing else got writable)"
+  # Positive control for the workspace: without this the "caller could not resize
+  # it" results above would be true of a workspace that does not work at all.
+  WSPROBE="${PREFIX}workspace-probe"
+  docker rm -f "$WSPROBE" >/dev/null 2>&1 || true
+  PROBE="echo ok > $WPATH/probe.txt 2>/dev/null && echo WORKSPACE_WRITABLE=yes || echo WORKSPACE_WRITABLE=no; echo x > /etc/p7-probe 2>/dev/null && echo ROOTFS_WRITABLE=yes || echo ROOTFS_WRITABLE=no; echo PWD=\$(pwd); grep -E ' $WPATH | /tmp ' /proc/mounts"
+  disp_call POST "/spawn" "{\"name\":\"$WSPROBE\",\"cmd\":[\"sh\",\"-c\",\"$PROBE\"]}"
+  if [ "$CODE" != "201" ]; then
+    bad "workspace probe spawn returned $CODE ($BODY) - workspace claims below are void"
+  else
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      [ "$(hins "$WSPROBE" '{{.State.Running}}')" = "false" ] && break; sleep 1
+    done
+    plog=$(docker logs "$WSPROBE" 2>&1 | tr -d '\000')
+    printf '%s' "$plog" | grep -q 'WORKSPACE_WRITABLE=yes' \
+      && ok "workspace $WPATH is writable by the worker user" \
+      || bad "workspace $WPATH is NOT writable - the feature does not work"
+    printf '%s' "$plog" | grep -q 'ROOTFS_WRITABLE=no' \
+      && ok "rootfs outside the workspace is still read-only (/etc refused)" \
+      || bad "ROOTFS IS WRITABLE - ReadonlyRootfs was lost"
+    printf '%s' "$plog" | grep -q "PWD=$WPATH" \
+      && ok "worker starts in the workspace (WorkingDir=$WPATH)" \
+      || bad "worker cwd is not $WPATH"
+    note "mounts seen from inside: $(printf '%s' "$plog" | grep -E "^tmpfs $WPATH|^tmpfs /tmp" | tr '\n' ' ')"
+    tmn=$(dtmpfs "$WSPROBE" | wc -l | tr -d ' ')
+    [ "$tmn" = "2" ] && ok "exactly two tmpfs mounts, both the dispatcher's (/tmp + $WPATH)" \
+                     || bad "expected 2 tmpfs mounts, found $tmn: $(dtmpfs "$WSPROBE" | tr '\n' ' ')"
+    dtmpfs "$WSPROBE" | grep -q "^$WPATH=size=$WSIZE," \
+      && ok "workspace tmpfs sized from dispatcher config (size=$WSIZE)" \
+      || bad "workspace tmpfs is $(dtmpfs "$WSPROBE" | grep "^$WPATH=")"
+    dtmpfs "$WSPROBE" | grep -q "^/tmp=size=$TMPSIZE\$" \
+      && ok "/tmp is still small (size=$TMPSIZE)" \
+      || bad "/tmp is $(dtmpfs "$WSPROBE" | grep '^/tmp=') - expected size=$TMPSIZE"
+    # A tmpfs is RAM, not a path on the host. The distinction is the whole point,
+    # so assert there is still no bind or volume mount of any kind.
+    mnt=$(hins "$WSPROBE" '{{range .Mounts}}{{.Type}}:{{.Source}} {{end}}')
+    [ -z "$(printf '%s' "$mnt" | tr -d ' ')" ] \
+      && ok "no bind or volume mounts at all (.Mounts empty)" \
+      || bad "worker has host mounts: $mnt"
+    docker rm -f "$WSPROBE" >/dev/null 2>&1 || true
+  fi
+
   cleanup_workers
   docker rm -f "$BYSTANDER" >/dev/null 2>&1 || true
+
+  suite_env_injection
+}
+
+########################################################################################
+# ENV INJECTION - needs a configuration the composed dispatcher cannot hold at once
+########################################################################################
+# The requirements are:
+#   * an allowlisted variable that IS set in the dispatcher must reach the worker,
+#   * an allowlisted variable that is NOT set must be ABSENT rather than empty,
+#   * a name on the dispatcher's reserved list must be refused even when the
+#     operator asks for it,
+# and one dispatcher cannot be in all three states for the same variable. So this
+# section stands up its OWN dispatcher from the same p1-dispatcher.py, with a
+# configuration chosen to make each case decidable, and tears it down. It is
+# namespaced p7-* and labels its workers p7-scratch-worker so neither cleanup path
+# can reach into the composed stack.
+p7_down() {
+  docker rm -f $(docker ps -aq --filter "name=^/${P7PREFIX}" 2>/dev/null) >/dev/null 2>&1
+  docker rm -f "$P7DISP" >/dev/null 2>&1
+}
+
+p7_call() {  # METHOD PATH [BODY] [TOKEN|__NONE__]
+  local m=$1 p=$2 b=${3:-} tok=${4-$P7TOKEN} args=()
+  args=(-s -m 60 -w $'\nP1CODE:%{http_code}' -X "$m")
+  [ "$tok" != "__NONE__" ] && args+=(-H "Authorization: Bearer $tok")
+  [ -n "$b" ] && args+=(-H 'Content-Type: application/json' -d "$b")
+  _run "${args[@]}" "http://$P7DISP:2375$p"
+}
+
+suite_env_injection() {
+  echo
+  echo "ENV INJECTION  (values from the dispatcher's own environment, never the request)"
+  trap p7_down EXIT INT TERM
+  p7_down
+  P7TOKEN="p7-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  P7SENTINEL="p7-sentinel-$$"
+  # `-e NAME` with no value inherits from this shell: the credential is passed by
+  # reference, so it never appears in argv where `ps` would show it.
+  export GITHUB_TOKEN="${TARGET_REPO_TOKEN:-}"
+  export TARGET_REPO="${TARGET_REPO:-}"
+  docker run -d --name "$P7DISP" --network "$NET" \
+    -v "$HERE_DIR/p1-dispatcher.py":/app/dispatcher.py:ro \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -e DISPATCH_TOKEN="$P7TOKEN" \
+    -e WORKER_IMAGE="$WORKER_IMAGE" \
+    -e WORKER_LABEL_KEY=role -e WORKER_LABEL_VALUE="$P7LABEL" \
+    -e WORKER_NETWORK="$NET" -e WORKER_NAME_PREFIX="$P7PREFIX" \
+    -e WORKER_MEMORY=536870912 \
+    -e WORKER_WORK_PATH=/work -e WORKER_WORK_SIZE="$P7WORK_SIZE" \
+    -e WORKER_ENV_ALLOWLIST="GITHUB_TOKEN,TARGET_REPO,P7_SET_ON_PURPOSE,$P7UNSET,DISPATCH_TOKEN,WORKER_IMAGE" \
+    -e P7_SET_ON_PURPOSE="$P7SENTINEL" \
+    -e GITHUB_TOKEN -e TARGET_REPO \
+    -e PYTHONUNBUFFERED=1 -e PYTHONDONTWRITEBYTECODE=1 \
+    --read-only --tmpfs /tmp:size=8m \
+    --security-opt no-new-privileges --cap-drop ALL \
+    -m 96m --pids-limit 64 --restart no \
+    python:3-alpine python /app/dispatcher.py >/dev/null 2>&1
+
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    p7_call GET "/healthz"; [ "$CODE" = "200" ] && break; sleep 1
+  done
+  if [ "$CODE" != "200" ]; then
+    bad "scratch dispatcher $P7DISP did not come up ($CODE) - env-injection claims void"
+    note "$(docker logs "$P7DISP" 2>&1 | tail -5 | scrub | tr '\n' ' ')"
+    p7_down; return
+  fi
+  note "scratch dispatcher up: allowlist=GITHUB_TOKEN,TARGET_REPO,P7_SET_ON_PURPOSE,$P7UNSET,DISPATCH_TOKEN,WORKER_IMAGE"
+  note "P7_SET_ON_PURPOSE is set in it; $P7UNSET deliberately is not; the last two are reserved names"
+
+  # One worker, spawned with a body that also tries to override and add.
+  W="${P7PREFIX}env"
+  p7_call POST "/spawn" "{\"name\":\"$W\",\"cmd\":[\"sleep\",\"120\"],\"Env\":[\"P7_SET_ON_PURPOSE=attacker-controlled\",\"$P7UNSET=attacker-controlled\",\"DISPATCH_TOKEN=attacker-controlled\",\"EVIL_ADDED=1\"]}"
+  SPAWN_BODY="$BODY"
+  if [ "$CODE" != "201" ]; then
+    bad "POSITIVE CONTROL FAILED: scratch spawn returned $CODE ($(printf '%s' "$BODY" | scrub)) - env claims void"
+    p7_down; return
+  fi
+  ok "scratch dispatcher spawned a worker (201)"
+
+  # POSITIVE CONTROL for the whole feature: a variable the dispatcher HAS reaches
+  # the worker, with the dispatcher's value.
+  [ "$(denv "$W" P7_SET_ON_PURPOSE)" = "$P7SENTINEL" ] \
+    && ok "allowlisted variable that IS set reaches the worker with the dispatcher's value" \
+    || bad "injection does not work: P7_SET_ON_PURPOSE is '$(denv "$W" P7_SET_ON_PURPOSE)', expected the dispatcher's value"
+  # ... and the caller could not overwrite it, which is only a real test because
+  # the variable is genuinely present.
+  [ "$(eany "$W" P7_SET_ON_PURPOSE attacker-controlled)" = "no" ] \
+    && ok "caller could not override a variable that IS injected" \
+    || bad "CALLER OVERRODE AN INJECTED VARIABLE"
+  # THE unset-vs-empty requirement.
+  if [ "$(dhas "$W" "$P7UNSET")" = "no" ]; then
+    ok "allowlisted-but-unset $P7UNSET is ABSENT from the worker (not present-and-empty)"
+  else
+    bad "$P7UNSET is present in the worker as '$(denv "$W" "$P7UNSET")' - should have been omitted"
+  fi
+  [ "$(dhas "$W" EVIL_ADDED)" = "no" ] \
+    && ok "caller could not add a variable outside the allowlist (EVIL_ADDED absent)" \
+    || bad "CALLER ADDED EVIL_ADDED"
+  # Reserved names: refused by the dispatcher even though the operator listed them.
+  # DISPATCH_TOKEN is the sharp one - a worker holding it could spawn more workers.
+  [ "$(dhas "$W" DISPATCH_TOKEN)" = "no" ] \
+    && ok "reserved DISPATCH_TOKEN refused by the allowlist (worker cannot spawn workers)" \
+    || bad "WORKER HOLDS DISPATCH_TOKEN - privilege amplification"
+  [ "$(dhas "$W" WORKER_IMAGE)" = "no" ] \
+    && ok "reserved WORKER_* name refused by the allowlist (WORKER_IMAGE absent)" \
+    || bad "worker holds WORKER_IMAGE - dispatcher control surface leaked"
+  dlog=$(docker logs "$P7DISP" 2>&1)
+  printf '%s' "$dlog" | grep -q "refusing to allowlist 'DISPATCH_TOKEN'" \
+    && ok "dispatcher LOGGED the refused allowlist entry" \
+    || bad "dispatcher silently dropped a refused allowlist entry"
+  printf '%s' "$dlog" | grep -q "$P7UNSET is allowlisted but unset" \
+    && ok "dispatcher LOGGED the omitted-because-unset variable" \
+    || bad "dispatcher silently omitted an unset variable"
+  printf '%s' "$dlog" | grep -q "env_injected=" \
+    && ok "spawn log records injected variable NAMES (audit trail)" \
+    || bad "no per-spawn env audit line in the dispatcher log"
+
+  # --- credential handling: only meaningful with a real token configured ------
+  if [ -z "${TARGET_REPO_TOKEN:-}" ] || [ -z "${TARGET_REPO:-}" ]; then
+    note "TARGET_REPO/TARGET_REPO_TOKEN not in local.env - skipping the credential"
+    note "and live-clone controls. Set them to exercise the full path."
+  else
+    [ "$(denv "$W" GITHUB_TOKEN)" = "$(denv "$P7DISP" GITHUB_TOKEN)" ] && [ "$(dhas "$W" GITHUB_TOKEN)" = "yes" ] \
+      && ok "GITHUB_TOKEN injected from the dispatcher's own env (values compared, never printed)" \
+      || bad "GITHUB_TOKEN did not reach the worker"
+    [ "$(denv "$W" TARGET_REPO)" = "${TARGET_REPO}" ] \
+      && ok "TARGET_REPO injected from the dispatcher's own env" \
+      || bad "TARGET_REPO did not reach the worker"
+    # The caller never sees the credential: not in the spawn response, not in any
+    # other response, and not in the dispatcher's log.
+    printf '%s' "$SPAWN_BODY" | grep -qF "$TARGET_REPO_TOKEN" \
+      && bad "TOKEN ECHOED IN THE SPAWN RESPONSE" \
+      || ok "token not echoed in the spawn response"
+    p7_call POST "/spawn" '{"name":"bad name"}'; b1="$BODY"
+    p7_call POST "/spawn" "{\"name\":\"${P7PREFIX}x\",\"cmd\":[\"badcmd\"]}"; b2="$BODY"
+    p7_call GET "/healthz"; b3="$BODY"
+    printf '%s%s%s' "$b1" "$b2" "$b3" | grep -qF "$TARGET_REPO_TOKEN" \
+      && bad "TOKEN ECHOED IN AN ERROR/HEALTH RESPONSE" \
+      || ok "token not echoed in error or health responses"
+    printf '%s' "$dlog" | grep -qF "$TARGET_REPO_TOKEN" \
+      && bad "TOKEN PRESENT IN THE DISPATCHER'S OWN LOG" \
+      || ok "token absent from the dispatcher's log (names only)"
+    # The spawn request itself never carried the credential: the worker's argv
+    # holds the literal '$GITHUB_TOKEN', expanded only inside the container.
+    CL="${P7PREFIX}clone"
+    CLONE="set -e; cd /work; git clone --depth 1 https://x-access-token:\$GITHUB_TOKEN@github.com/\$TARGET_REPO repo >/dev/null 2>&1; echo CLONE_OK files=\$(find repo -type f | wc -l) kb=\$(du -sk repo | cut -f1); cd repo; git checkout -q -b p7-verify; git commit -q --allow-empty -m p7-verify && echo COMMIT_OK; echo WORKSPACE_FREE_KB=\$(df -k /work | tail -1 | awk '{print \$4}')"
+    p7_call POST "/spawn" "{\"name\":\"$CL\",\"cmd\":[\"sh\",\"-c\",\"$CLONE\"]}"
+    if [ "$CODE" != "201" ]; then
+      bad "live-clone worker spawn returned $CODE ($(printf '%s' "$BODY" | scrub))"
+    else
+      hins "$CL" '{{json .Config.Cmd}}' | grep -qF "$TARGET_REPO_TOKEN" \
+        && bad "THE CREDENTIAL IS IN THE WORKER'S ARGV - it came from the caller" \
+        || ok "spawn request never carried the credential (argv holds \$GITHUB_TOKEN, not its value)"
+      for _ in $(seq 1 60); do
+        [ "$(hins "$CL" '{{.State.Running}}')" = "false" ] && break; sleep 2
+      done
+      clog=$(docker logs "$CL" 2>&1 | tr -d '\000')
+      xc=$(hins "$CL" '{{.State.ExitCode}}')
+      if printf '%s' "$clog" | grep -q 'CLONE_OK'; then
+        ok "shallow git clone of the private target repo through the egress proxy SUCCEEDED"
+        note "$(printf '%s' "$clog" | grep -E 'CLONE_OK|WORKSPACE_FREE_KB' | tr '\n' ' ' | scrub)"
+      else
+        bad "live clone failed (exit $xc): $(printf '%s' "$clog" | tail -2 | tr '\n' ' ' | scrub)"
+      fi
+      printf '%s' "$clog" | grep -q 'COMMIT_OK' \
+        && ok "git can branch and commit inside the workspace (a worker can produce a PR branch)" \
+        || bad "git could not commit in the workspace"
+      printf '%s' "$clog" | grep -qF "$TARGET_REPO_TOKEN" \
+        && bad "TOKEN LEAKED INTO THE WORKER'S LOG" \
+        || ok "token absent from the worker's own log output"
+    fi
+  fi
+
+  p7_down
+  trap - EXIT INT TERM
 }
 
 echo

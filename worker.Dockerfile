@@ -22,9 +22,11 @@ RUN apk add --no-cache git curl ca-certificates \
  && adduser -D -u 10001 worker
 
 # The proxy wiring is baked into the IMAGE rather than passed at spawn time.
-# The spawn dispatcher builds every container-create body from a fixed template
-# with no Env key at all -- which is exactly what makes it safe -- so a worker
-# inherits nothing from its caller. Without this a worker can reach the model
+# The spawn dispatcher does now inject a few variables, but only names on its own
+# allowlist with values from its own environment -- what makes it safe is that
+# the env is DISPATCHER-constructed, not that it is absent. Proxy settings are
+# not secret and not per-ticket, so baking them in keeps the allowlist reserved
+# for things that genuinely are. Without this a worker can reach the model
 # gate (plaintext, direct) but does not know the egress proxy exists, and every
 # push fails with an unhelpful DNS error.
 #

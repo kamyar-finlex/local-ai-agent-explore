@@ -154,6 +154,18 @@ services:
       WORKER_NETWORK: hermes-isolated
       WORKER_NAME_PREFIX: hermes-worker-
       WORKER_MEMORY: ${WORKER_MEMORY:-536870912}
+      # Names the dispatcher may inject, and the VALUES it injects. The values
+      # live HERE, in the dispatcher's own environment - never in a /spawn
+      # request. That is the whole safety property: the caller cannot name a
+      # variable, add one, override one, or read one back.
+      WORKER_ENV_ALLOWLIST: ${WORKER_ENV_ALLOWLIST:-GITHUB_TOKEN,TARGET_REPO}
+      GITHUB_TOKEN: ${TARGET_REPO_TOKEN:-}
+      TARGET_REPO: ${TARGET_REPO:-}
+      # The worker's one writable mount. Keep the size BELOW WORKER_MEMORY:
+      # tmpfs pages are charged to the worker's own memory cgroup, so an
+      # oversized workspace turns a reportable ENOSPC into a SIGKILL mid-clone.
+      WORKER_WORK_PATH: ${WORKER_WORK_PATH:-/work}
+      WORKER_WORK_SIZE: ${WORKER_WORK_SIZE:-384m}
       PYTHONDONTWRITEBYTECODE: "1"
       # Without this the dispatcher's per-request log sits in a stdio buffer and
       # `docker logs` shows nothing - the spawn audit trail is silently absent,

@@ -91,7 +91,7 @@ exit=1
 ```bash
 ./verify-sandbox.sh              # 56 passed, 0 failed
 ./verify-egress.sh               # 45 passed, 0 failed  (46 with MODEL_CHAT=1)
-./verify-spawning.sh dispatcher  # 29 passed, 0 failed
+./verify-spawning.sh dispatcher  # 68 passed, 0 failed
 ```
 
 ## What changed in the translation
@@ -169,7 +169,7 @@ worker that ignores them still has no route anywhere.
 **The rejected socket proxy.** `verify-spawning.sh proxy` measures
 `tecnativa/docker-socket-proxy`, which the harness shows accepting a host-root bind
 mount, `Privileged: true`, `NetworkMode: host`, `PidMode: host` and a re-mounted Docker
-socket (8 passed, 9 failed — unchanged after this consolidation). Composing a mechanism
+socket (8 passed, 10 failed — unchanged after this consolidation). Composing a mechanism
 the harness proves unsafe would be the wrong artifact to ship, so it stays on the
 standalone `p1-*` rig: `./p1-spawn-setup.sh`, run the suite, `./p1-spawn-teardown.sh`.
 The suite is kept because the exploit is the evidence for the decision.

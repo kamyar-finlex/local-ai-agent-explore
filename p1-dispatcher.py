@@ -17,6 +17,20 @@ Contrast with option (a), a path-filtering socket proxy: that permits
 `POST /containers/create` in full and inspects nothing about the body. This
 process is the missing body-validation layer.
 
+A worker also needs to be able to do real work: clone a repository, run a test
+suite, push a branch, open a pull request. Two things were missing for that, and
+both are supplied WITHOUT giving the caller a new lever:
+
+  * Credentials. The dispatcher injects a fixed allowlist of variable NAMES
+    (WORKER_ENV_ALLOWLIST) whose VALUES it reads from its OWN environment. The
+    request is never consulted: a caller cannot name a variable, add one,
+    override one, or read one back. `Env` in a /spawn body is ignored exactly the
+    way `HostConfig` is.
+  * A writable workspace. ONE tmpfs at WORKER_WORK_PATH, sized by
+    WORKER_WORK_SIZE, both dispatcher configuration. The rootfs stays read-only
+    and there are still no bind mounts - a worker gets RAM to work in, never a
+    path on the host.
+
 Configuration (env):
   DISPATCH_TOKEN       bearer token the caller must present
   WORKER_IMAGE         image every worker runs (default alpine:latest)
@@ -25,6 +39,11 @@ Configuration (env):
   WORKER_NETWORK       network workers join               (default p1-spawn-net)
   WORKER_MEMORY        per-worker memory cap in bytes      (default 67108864 = 64m)
   WORKER_NAME_PREFIX   names must start with this          (default p1-)
+  WORKER_ENV_ALLOWLIST comma/space list of variable NAMES the dispatcher copies
+                       from its own environment into every worker
+                       (default "GITHUB_TOKEN,TARGET_REPO")
+  WORKER_WORK_PATH     the one writable workspace path     (default /work)
+  WORKER_WORK_SIZE     tmpfs size for it, k/m/g suffix     (default 384m)
   DOCKER_SOCK          path to the Docker socket           (default /var/run/docker.sock)
   BIND_PORT            TCP port to listen on               (default 2375)
 
@@ -47,6 +66,14 @@ NAME_PREFIX  = os.environ.get("WORKER_NAME_PREFIX", "p1-")
 DOCKER_SOCK  = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 BIND_PORT    = int(os.environ.get("BIND_PORT", "2375"))
 
+ENV_ALLOWLIST_RAW = os.environ.get("WORKER_ENV_ALLOWLIST", "GITHUB_TOKEN,TARGET_REPO")
+WORK_PATH         = os.environ.get("WORKER_WORK_PATH", "/work")
+WORK_SIZE         = os.environ.get("WORKER_WORK_SIZE", "384m")
+# /tmp stays deliberately tiny and is NOT configurable: the workspace is the one
+# place a worker is meant to write, and a second large tmpfs would just be a
+# second way to spend the worker's memory cap.
+TMP_SIZE          = "8m"
+
 # A name we will CREATE must carry the namespace prefix - both input validation
 # and a guard against path traversal into the Docker API (the name is
 # interpolated into the request path).
@@ -61,6 +88,105 @@ SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 # Commands we will run as PID 1 of a worker. Kept to a tiny allowlist so a caller
 # cannot turn /spawn into arbitrary host-adjacent execution via the entrypoint.
 CMD_ALLOWLIST = {"sleep", "true", "echo", "sh", "cat", "id"}
+
+# --------------------------------------------------------------------------- #
+# environment injection - names from OUR configuration, values from OUR env
+# --------------------------------------------------------------------------- #
+
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+
+# Names the allowlist may never contain, even when the operator asks. These are
+# the dispatcher's own control surface:
+#   DISPATCH_TOKEN - handing it to a worker gives that worker spawn rights, so one
+#                    compromised worker could create more workers. Privilege
+#                    amplification through a config typo.
+#   DOCKER_SOCK / BIND_PORT / WORKER_* - the knobs that define the template a
+#                    worker is created from; a worker has no business reading them.
+#   PATH / LD_* -    process-hijacking variables. Not caller-controlled here, but
+#                    an allowlist entry is a standing invitation.
+ENV_NAME_DENY = {
+    "DISPATCH_TOKEN", "DOCKER_SOCK", "BIND_PORT",
+    "PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+}
+
+SIZE_RE = re.compile(r"^([1-9][0-9]{0,9})([kKmMgG])?$")
+
+# Paths the workspace tmpfs may not shadow. Mounting a tmpfs over any of these
+# either breaks the worker outright or hides the image's own contents; /tmp is
+# excluded because it is mounted separately and must stay small.
+WORK_PATH_DENY = {
+    "/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib64", "/media",
+    "/mnt", "/opt", "/proc", "/root", "/run", "/sbin", "/srv", "/sys", "/tmp",
+    "/usr", "/var",
+}
+
+
+def parse_env_allowlist(raw):
+    """Turn WORKER_ENV_ALLOWLIST into an ordered list of names, dropping anything
+    that is not a plain variable name or is on the deny set. Returns
+    (accepted, rejected) so startup can say out loud what it ignored."""
+    accepted, rejected = [], []
+    for tok in re.split(r"[,\s]+", (raw or "").strip()):
+        if not tok:
+            continue
+        if (not ENV_NAME_RE.match(tok)) or tok in ENV_NAME_DENY or tok.startswith("WORKER_"):
+            rejected.append(tok)
+            continue
+        if tok not in accepted:
+            accepted.append(tok)
+    return accepted, rejected
+
+
+def size_to_bytes(s):
+    m = SIZE_RE.match((s or "").strip())
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n * {"k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[(m.group(2) or "m").lower()]
+
+
+def validate_work_path(p):
+    return (isinstance(p, str) and p.startswith("/") and len(p) > 1
+            and ".." not in p.split("/") and "//" not in p
+            and not p.endswith("/") and p not in WORK_PATH_DENY
+            and re.match(r"^(/[A-Za-z0-9._-]+)+$", p) is not None)
+
+
+ENV_ALLOWLIST, ENV_REJECTED = parse_env_allowlist(ENV_ALLOWLIST_RAW)
+WORK_SIZE_BYTES = size_to_bytes(WORK_SIZE)
+
+# Options for the workspace tmpfs. Both are load-bearing and neither is guessable
+# from the size alone:
+#   mode=1777 - Docker gives a fresh tmpfs the permissions of the directory it
+#               shadows, and the worker image's /work is root-owned 0755. Without
+#               this, the workspace exists and the non-root worker user cannot
+#               write a single byte into it.
+#   exec      - Docker mounts tmpfs noexec by default, which breaks every test
+#               suite that runs something from inside the checkout (a venv's
+#               python, node_modules/.bin, ./scripts/test.sh). It is not a
+#               boundary worth keeping here: the worker is *already* executing
+#               agent-chosen code from its read-only rootfs, so noexec on the
+#               workspace buys nothing while costing the whole feature.
+WORK_TMPFS_OPTS = f"size={WORK_SIZE},mode=1777,exec"
+
+
+def worker_env():
+    """Build the worker's Env from the DISPATCHER's own environment.
+
+    The request is not a parameter of this function, and that is the whole point.
+    An allowlisted name that is unset - or set to the empty string, which is what
+    `${TARGET_REPO:-}` in compose produces for "not configured" - is OMITTED
+    rather than injected empty: a worker that sees GITHUB_TOKEN="" fails deep
+    inside a git push, whereas one that sees no GITHUB_TOKEN at all can say so.
+    """
+    env, omitted = [], []
+    for name in ENV_ALLOWLIST:
+        val = os.environ.get(name, "")
+        if val == "":
+            omitted.append(name)
+        else:
+            env.append(f"{name}={val}")
+    return env, omitted
 
 
 class DockerError(Exception):
@@ -151,13 +277,23 @@ def spawn(req):
     if cmd[0] not in CMD_ALLOWLIST:
         raise DockerError(400, {"error": f"cmd[0] must be one of {sorted(CMD_ALLOWLIST)}"})
 
+    # Values from OUR environment, names from OUR configuration. `req` is not
+    # consulted - a caller-supplied "Env" is as inert as a caller-supplied
+    # "HostConfig".
+    env, omitted = worker_env()
+
     # THE ENTIRE POINT: the create body is built here, from a fixed template.
-    # Nothing from the caller reaches HostConfig. There is no code path by which
-    # Binds, Privileged, NetworkMode, PidMode, Devices, CapAdd, etc. can be set
-    # by a request. The client supplies a name and a command; that is all.
+    # Nothing from the caller reaches HostConfig or Env. There is no code path by
+    # which Binds, Privileged, NetworkMode, PidMode, Devices, CapAdd, Tmpfs or an
+    # environment variable can be set by a request. The client supplies a name and
+    # a command; that is all.
     create_body = {
         "Image": WORKER_IMAGE,
         "Cmd": cmd,
+        "Env": env,
+        # So `git clone .` and a bare `pytest` land in the workspace even when the
+        # image's WORKDIR and WORKER_WORK_PATH have drifted apart.
+        "WorkingDir": WORK_PATH,
         "Labels": {
             LABEL_KEY: LABEL_VALUE,
             "managed-by": "p1-dispatcher",
@@ -169,7 +305,14 @@ def spawn(req):
             "SecurityOpt": ["no-new-privileges"],
             "NetworkMode": WORKER_NET,
             "ReadonlyRootfs": True,
-            "Tmpfs": {"/tmp": "size=8m"},
+            # Exactly two tmpfs mounts, both ours: a tiny /tmp and ONE workspace.
+            # Still no "Binds" key with anything in it - RAM to write in, never a
+            # path on the host. Note the workspace does not enlarge the VM budget:
+            # tmpfs pages are charged to the container's own memory cgroup, so a
+            # worker's ceiling is WORKER_MEMORY whatever this size says (measured:
+            # a 200 MiB write into a 512 MiB tmpfs inside a 128 MiB container is
+            # OOM-killed at ~126 MiB, not given ENOSPC).
+            "Tmpfs": {"/tmp": f"size={TMP_SIZE}", WORK_PATH: WORK_TMPFS_OPTS},
             "RestartPolicy": {"Name": "no"},
             "Binds": [],
             "Privileged": False,
@@ -178,6 +321,15 @@ def spawn(req):
     _, created = docker_request("POST", f"/containers/create?name={name}", create_body)
     cid = created["Id"]
     docker_request("POST", f"/containers/{cid}/start")
+    # NAMES only, never values - this log is the operator's record of which
+    # credentials a worker was given, and it must stay safe to paste.
+    print(f"p1-dispatcher spawn name={name} id={cid[:12]} "
+          f"env_injected={','.join(n for n in ENV_ALLOWLIST if n not in omitted) or '-'} "
+          f"env_omitted_unset={','.join(omitted) or '-'} "
+          f"workspace={WORK_PATH}({WORK_SIZE})", flush=True)
+    # The response deliberately carries nothing about the environment: not the
+    # values, not the names. A caller that could read back what it was given
+    # would have turned an injection point into a credential oracle.
     return 201, {"id": cid, "name": name, "image": WORKER_IMAGE,
                  "label": f"{LABEL_KEY}={LABEL_VALUE}"}
 
@@ -252,6 +404,42 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit("refusing to start: DISPATCH_TOKEN is empty")
+    # Config errors fail CLOSED. A dispatcher that started with an unusable
+    # workspace path would spawn workers that cannot write, and the symptom would
+    # surface an hour later as a ticket that "failed its tests".
+    if not validate_work_path(WORK_PATH):
+        raise SystemExit(f"refusing to start: WORKER_WORK_PATH={WORK_PATH!r} is not an "
+                         f"acceptable workspace path (absolute, single path, not one of "
+                         f"{sorted(WORK_PATH_DENY)})")
+    if WORK_SIZE_BYTES is None:
+        raise SystemExit(f"refusing to start: WORKER_WORK_SIZE={WORK_SIZE!r} is not a size "
+                         f"like 256m, 512m or 2g")
+
     print(f"p1-dispatcher listening on :{BIND_PORT} - image={WORKER_IMAGE} "
-          f"label={LABEL_KEY}={LABEL_VALUE} net={WORKER_NET}")
+          f"label={LABEL_KEY}={LABEL_VALUE} net={WORKER_NET}", flush=True)
+    print(f"p1-dispatcher workspace={WORK_PATH} tmpfs=({WORK_TMPFS_OPTS}) "
+          f"tmp=/tmp(size={TMP_SIZE}) rootfs=read-only binds=none", flush=True)
+
+    # Which credentials a worker will get, by NAME. Never a value: this log is the
+    # audit trail and it has to stay safe to paste into a ticket.
+    _env, _omitted = worker_env()
+    print("p1-dispatcher env allowlist=%s injected=%s omitted_unset=%s" % (
+        ",".join(ENV_ALLOWLIST) or "-",
+        ",".join(n for n in ENV_ALLOWLIST if n not in _omitted) or "-",
+        ",".join(_omitted) or "-"), flush=True)
+    for _n in _omitted:
+        # Said out loud, per name: an omitted variable is a worker that will fail
+        # at its first push, and silence here makes that look like a worker bug.
+        print(f"p1-dispatcher WARNING: {_n} is allowlisted but unset in the "
+              f"dispatcher's own environment - workers will NOT receive it", flush=True)
+    for _n in ENV_REJECTED:
+        print(f"p1-dispatcher WARNING: refusing to allowlist {_n!r} - not a plain "
+              f"variable name, or reserved (dispatcher control surface)", flush=True)
+    if WORK_SIZE_BYTES >= WORKER_MEM:
+        # Not fatal, but it changes the failure mode from a clean ENOSPC into a
+        # SIGKILL: tmpfs pages are charged to the worker's memory cgroup.
+        print(f"p1-dispatcher WARNING: workspace {WORK_SIZE} >= WORKER_MEMORY "
+              f"{WORKER_MEM // (1024 * 1024)}m - a worker that fills the workspace will be "
+              f"OOM-killed before the tmpfs reports being full", flush=True)
+
     ThreadingHTTPServer(("0.0.0.0", BIND_PORT), Handler).serve_forever()
