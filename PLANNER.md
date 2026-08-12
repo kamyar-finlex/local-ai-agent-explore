@@ -234,7 +234,7 @@ and the documented remedy is for the ticket to commit a make target instead.
 
 ## Verifying it
 
-`./verify-planner.sh` — **98 checks, 0 failures**, no credentials, no live model,
+`./verify-planner.sh` — **101 checks, 0 failures**, no credentials, no live model,
 no GitHub. The only socket it opens is a loopback mock endpoint.
 
 The pre-existing suites still run: contract agreement against `ORCHESTRATOR.md`,
@@ -458,8 +458,17 @@ appears at runtime as a worker that cannot build.
 ticket proposed "Create a FastAPI app" for a README that sanctions pytest and
 nothing else and explicitly says the router opens no socket. `ORCHESTRATOR.md`
 prohibits adding an unsanctioned dependency, but that prohibition is enforced on
-the *worker*, not on the planner, and there is no check here for it — detecting it
-would mean deciding which names in a Details paragraph are packages.
+the *worker*, not on the planner, and there is still no check here for it —
+detecting it would mean deciding which names in a Details paragraph are packages.
+
+What changed with TECH-101 is that the planner is at least **told** the list.
+Both the layout call and every ticket call now carry the spec's
+`## Implementation constraints` section verbatim, as an explicit "a worker
+refuses anything else", and where the spec sanctions nothing they say to plan
+against the standard library. That converts the failure from *invisible* to
+*discouraged*; it does not make it *impossible*, and a ticket that presupposes an
+unsanctioned package will still pass every mechanical check here and be refused
+at the worker. The gap is real and is the honest state of it.
 
 **File-layout quality is the ceiling on everything downstream, and it is now a
 single point of failure.** One call decides the layout; every ticket is

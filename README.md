@@ -276,6 +276,16 @@ labelled `spec` goes in, implementation issues come out — each with the sectio
 the dispatcher parses, one priority, declared dependencies, and a file list that
 lets concurrent tickets avoid each other.
 
+What it plans *from* is the target project's own README, and that document has
+one requirement placed on it: it describes the product and not the
+implementation, **except** for an `## Implementation constraints` section naming
+the third-party packages the project may use. Everything about how the thing is
+built is the planner's to choose; the set of third-party code it is allowed to
+run is a human's to grant. A spec that omits that section sanctions nothing, and
+the plan it produces will pass every mechanical check and be unbuildable — which
+is the failure TECH-101 exists to record, and the boundary is set out in full in
+[ORCHESTRATOR.md](ORCHESTRATOR.md).
+
 Its design problem is the model, not the prompt. The first version handed a 20B
 model a seven-phase procedure to follow; across four live runs it improvised
 instead of starting, misread a missing `jq` as a network outage, wrote the
@@ -292,7 +302,7 @@ with the raw reply printed**. There is no branch that supplies a value the model
 did not send.
 
 ```bash
-./verify-planner.sh; echo "exit=$?"     # RESULT: 98 passed, 0 failed / exit=0
+./verify-planner.sh; echo "exit=$?"     # RESULT: 101 passed, 0 failed / exit=0
 ```
 
 > ### → **[PLANNER.md](PLANNER.md)** — the loop, where exactly the model is
@@ -333,7 +343,7 @@ all. There is no code path in the program that sets a label, merges, or
 force-pushes.
 
 ```bash
-./verify-worker.sh; echo "exit=$?"      # RESULT: 116 passed, 0 failed / exit=0
+./verify-worker.sh; echo "exit=$?"      # RESULT: 138 passed, 0 failed / exit=0
 ./verify-worker.sh image                # + one ticket inside hermes-worker:latest
 ```
 
@@ -381,7 +391,7 @@ force-pushes.
 | `worker.py` | The worker: one ticket in, one pull request out; the model only returns file contents |
 | `p4-worker.sh` | The worker container's PID 1, named by the dispatcher's default worker command |
 | `p4-worker-instructions.md` | What the worker does, and the whole of what the model inside it is told |
-| `verify-worker.sh` | Worker verification: 116 checks, an in-image run, and a mutation control |
+| `verify-worker.sh` | Worker verification: 138 checks, an in-image run, and a mutation control |
 | `p5-fixtures/repo/` | The fixture target project a worker is pointed at — no domain, on purpose |
 | `p5-fixtures/issues.json` | Fixture GitHub state: one conforming ticket, nine unusable ones |
 | `p5-fixtures/model/replies.json` | Sixteen canned scenarios: good, wrong-path, prose, dead endpoint, weakening, leaking |

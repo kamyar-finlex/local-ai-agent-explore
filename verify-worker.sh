@@ -222,6 +222,81 @@ emit(w.check_files(["/etc/hosts"]) is not None and w.check_files(["../x.py"]) is
 emit(w.branch_name({"number": 42, "title": "Add CSV export"}) == "issue-42-add-csv-export",
      "branch name is issue-<number>-<short-slug>, as the contract states")
 
+# The dependency policy: the contract names one README section, the worker reads
+# one README section, and if those two strings differ the worker sanctions
+# nothing and every manifest ticket is refused. Same failure class as
+# Blocked-by/Blocks, with a quieter symptom.
+emit(f"## {w.SEC_CONSTRAINTS}" in text,
+     f"the contract names the section the worker parses: '## {w.SEC_CONSTRAINTS}'")
+
+# Stronger than a string compare: the contract's own worked example is fed to
+# the worker's parser, so a documented format the code cannot read is a failure.
+example = re.search(r"```markdown\n(## " + re.escape(w.SEC_CONSTRAINTS) + r".*?)```",
+                    text, re.S)
+parsed = w.sanctioned_packages(example.group(1)) if example else None
+emit(parsed == {"fastapi", "uvicorn", "pydantic", "pytest", "httpx"},
+     f"the contract's example constraints section parses to its own list: {parsed}")
+
+# Absent section and empty section both sanction nothing; only the first is a
+# defect. `None` vs `set()` is the distinction the warning is built on.
+emit(w.sanctioned_packages("# p\n\nprose naming pytest and fastapi in passing") is None,
+     "a README with no constraints section sanctions nothing, whatever its prose says")
+emit(w.sanctioned_packages(f"# p\n\n## {w.SEC_CONSTRAINTS}\n\nStandard library only.\n")
+     == set(),
+     "an empty constraints section is a deliberate 'nothing', distinct from an absent one")
+
+# Permission is exact. The old check was `name.lower() in readme.lower()`, which
+# is not an allowlist: it sanctioned any package whose name fell inside a word.
+allow = f"# p\n\nThis API handles requests and re-exports things.\n\n## {w.SEC_CONSTRAINTS}\n\n- fastapi\n"
+emit(w.dependency_error("requirements.txt", None, "fastapi\n", allow) is None
+     and w.dependency_error("requirements.txt", None, "api\n", allow) is not None
+     and w.dependency_error("requirements.txt", None, "requests\n", allow) is not None
+     and w.dependency_error("requirements.txt", None, "re\n", allow) is not None,
+     "the sanctioned name passes; three packages that are only substrings of prose do not")
+
+# A whole dependency set can live on ONE line, and that is the line a model
+# writing a fresh pyproject.toml produces. A per-line scan sees only the key.
+# `dependencies = ["requests"]` walked through the check until TECH-101.
+one = f"# p\n\n## {w.SEC_CONSTRAINTS}\n\n- fastapi\n- pytest\n"
+emit(w.dependency_error("pyproject.toml", None, 'dependencies = ["requests"]\n', one) is not None
+     and w.dependency_error("pyproject.toml", None, '"devDependencies": {"lodash": "^4"}\n', one) is not None
+     and w.dependency_error("pyproject.toml", None, 'dependencies = ["fastapi>=0.1", "pytest"]\n', one) is None,
+     "a dependency list written on one line is read, in TOML and in JSON")
+
+# ...and the metadata beside it is not mistaken for packages, or every manifest
+# is refused and the check is useless in the other direction.
+emit(w.dependency_error("pyproject.toml", None,
+                        'name = "trip-planner"\nauthors = [{name = "A Person"}]\n'
+                        'classifiers = ["Programming Language :: Python"]\n'
+                        'description = "Plan a short trip."\n', one) is None,
+     "project metadata -- name, authors, classifiers, description -- is not a package list")
+
+# One package, however it is spelled. PEP 503 folding on both sides, or a model
+# writes ruamel_yaml where the README says ruamel.yaml and walks through.
+fold = f"# p\n\n## {w.SEC_CONSTRAINTS}\n\n- ruamel.yaml\n"
+emit(w.dependency_error("requirements.txt", None, "ruamel_yaml==0.18\n", fold) is None
+     and w.dependency_error("requirements.txt", None, "ruamel.yaml.clib\n", fold) is not None,
+     "name folding makes ruamel_yaml the sanctioned package, and ruamel.yaml.clib another")
+
+# Installing the project's manifest BUILDS it, and setuptools builds in tree. A
+# real run passed acceptance and the full suite and was then refused at the scope
+# gate for seven files it could not have declared. Exempt those; do not exempt a
+# `build/` directory that might hold source.
+for art in ("ai_trip_planner.egg-info/PKG-INFO", "build/lib/app/main.py",
+            "build/bdist.linux-aarch64/x", ".eggs/pkg"):
+    emit(bool(w.ARTIFACT_RE.search(art)), f"build by-product is exempt from the scope gate: {art}")
+for src in ("build/main.py", "build/settings.py", "app/main.py"):
+    emit(not w.ARTIFACT_RE.search(src), f"a plausible source path is NOT exempt: {src}")
+
+# The worker prompt must carry the list, not a pointer to it. A model that has to
+# find the section 6000 characters away is a model that guesses.
+prompt = w.file_prompt({"context_bytes": 4000},
+                       {"files": ["requirements.txt"], "goal": "g", "details": "d",
+                        "acceptance": "pytest -q", "number": 1, "title": "t"},
+                       "requirements.txt", allow, {})
+emit("fastapi" in prompt[1]["content"].split("RULES", 1)[1],
+     "the model is told which packages are sanctioned, in the rules, by name")
+
 # Round-trip: the planner's renderer -> the worker's parser. Two independent
 # implementations of one format; if they disagree, nothing works end to end.
 rendered = "\n".join([
@@ -729,19 +804,23 @@ blob_in weakenfix issue-40-extend-the-util-tests tests/test_util.py \
 
 ################################################################################
 echo
-echo "DEPENDENCIES: only what the target README already sanctions"
+echo "DEPENDENCIES: only what the README's Implementation constraints sanction"
 ################################################################################
-# The worker's container cannot reach a package registry, so an unsanctioned
-# dependency would fail later and far less clearly. #44 declares a manifest,
-# which is the one file where a new dependency can arrive legitimately.
+# The worker's container CAN reach PyPI, so this check is the control between a
+# model and arbitrary third-party code running with a credential in its
+# environment. #44 declares a manifest, which is the one file where a new
+# dependency can arrive legitimately.
 
 run_worker depbad dependency-bad 44
 [ "$(rc_of depbad)" = 10 ] \
-  && ok "a package the README never mentions is refused: exit 10, its own code" \
+  && ok "a package outside the sanctioned list is refused: exit 10, its own code" \
   || bad "the unsanctioned-dependency scenario exited $(rc_of depbad)"
 gh_q depbad comments | grep -q "requests" \
   && ok "the issue comment names the package that was refused" \
   || bad "the refused dependency is not named on the issue"
+gh_q depbad comments | grep -q "Implementation constraints" \
+  && ok "and names the section a human would have to edit to permit it" \
+  || bad "the refusal does not say where the permission would come from"
 [ "$(commits_in depbad issue-44-pin-the-test-dependency)" = 0 ] \
   && ok "nothing was committed" \
   || bad "it committed a manifest with an unsanctioned dependency"
@@ -753,6 +832,23 @@ run_worker depok dependency-ok 44
 [ "$(changed_in depok issue-44-pin-the-test-dependency | tr -d '\n')" = "requirements.txt" ] \
   && ok "the commit contains the manifest and nothing else" \
   || bad "the commit touches $(changed_in depok issue-44-pin-the-test-dependency | tr '\n' ' ')"
+
+# The regression that made an allowlist out of what was a substring search.
+# `api`, `requests` and `re` are all real distributions on PyPI and all three
+# appear inside words in the fixture README's prose. Under the old check every
+# one of them was sanctioned by a sentence nobody wrote as a permission.
+run_worker depsub dependency-substring 44
+[ "$(rc_of depsub)" = 10 ] \
+  && ok "packages that merely appear as substrings of README prose are refused" \
+  || bad "the substring scenario exited $(rc_of depsub); prose is granting permission"
+for pkg in api requests re; do
+  gh_q depsub comments | grep -qw "$pkg" \
+    && ok "the refusal names '$pkg', which the old substring check would have allowed" \
+    || bad "'$pkg' was not among the refused packages"
+done
+[ "$(commits_in depsub issue-44-pin-the-test-dependency)" = 0 ] \
+  && ok "nothing was committed" \
+  || bad "it committed a manifest sanctioned only by a coincidence of spelling"
 
 ################################################################################
 echo

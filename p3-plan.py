@@ -661,6 +661,65 @@ def clip(text, n, label):
     return text[:n] + f"\n[...{label} truncated at {n} characters...]"
 
 
+# --------------------------------------------------------------------------- #
+# the sanctioned package list
+#
+# Duplicated from worker.py rather than shared: these two run in different
+# containers, and every other piece of the ticket format is duplicated the same
+# way, with verify-*.sh comparing them against ORCHESTRATOR.md. A helper module
+# would be one more thing to mount into both.
+#
+# The planner needs this for a different reason than the worker does. The worker
+# uses it to refuse. The planner uses it to avoid producing a plan that will BE
+# refused: run 1 against gpt-oss:20b proposed "Create a FastAPI app" for a spec
+# that sanctioned pytest and nothing else, and every mechanical check passed it.
+# --------------------------------------------------------------------------- #
+
+SEC_CONSTRAINTS = "Implementation constraints"
+
+
+def normalise_pkg(name):
+    return re.sub(r"[-_.]+", "-", (name or "").strip().lower())
+
+
+def sanctioned_packages(readme):
+    """The '## Implementation constraints' list, or None when absent. See
+    ORCHESTRATOR.md, "What the specification must contain"."""
+    if readme is None:
+        return None
+    section, found = [], False
+    for line in readme.splitlines():
+        m = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if m:
+            if found:
+                break
+            found = normalise_pkg(m.group(1)) == normalise_pkg(SEC_CONSTRAINTS)
+            continue
+        if found:
+            section.append(line)
+    if not found:
+        return None
+    names = set()
+    for line in section:
+        m = re.match(r"^\s*[-*]\s+`?([A-Za-z][A-Za-z0-9._-]{0,60})`?", line)
+        if m:
+            names.add(normalise_pkg(m.group(1)))
+    return names
+
+
+def constraints_block(readme_text):
+    """The one paragraph both prompts get, so the stack choice is bounded in the
+    call that makes it and in every call that could quietly widen it."""
+    allowed = sanctioned_packages(readme_text)
+    if not allowed:
+        return ("SANCTIONED THIRD-PARTY PACKAGES: none. The spec sanctions no "
+                "package, so plan against the PYTHON STANDARD LIBRARY ONLY. A "
+                "ticket needing anything else cannot be built and a worker will "
+                "refuse it.")
+    return ("SANCTIONED THIRD-PARTY PACKAGES (exhaustive -- a worker refuses "
+            "anything else):\n" + "\n".join(f"- {p}" for p in sorted(allowed)))
+
+
 def layout_prompt(spec_text, readme_text, min_paths, max_paths):
     user = f"""TASK: choose the complete file layout for a project that does not exist yet.
 
@@ -670,11 +729,15 @@ SPECIFICATION (the issue being planned):
 TARGET README (the project's own specification):
 {clip(readme_text, 8000, 'README')}
 
+{constraints_block(readme_text)}
+
 RULES
 - Name every file the FINISHED project contains: the dependency/config manifest,
   every source file, and one test file per source file.
 - Repo-relative paths only. No leading "/", no "..", no directory names -- every
   entry must be a file.
+- The layout may assume the sanctioned packages above and no others. Choosing a
+  framework that is not on that list makes every ticket in the plan unbuildable.
 - Follow the conventions of the stack the README names and nothing more ambitious.
 - One concern per file. A file is the unit of concurrency, so two concerns in one
   file means two tickets that cannot run at the same time.
@@ -689,7 +752,7 @@ REPLY WITH EXACTLY THIS JSON SHAPE AND NOTHING ELSE:
             {"role": "user", "content": user}]
 
 
-def ticket_prompt(spec_text, plan, tid, uncovered, max_files):
+def ticket_prompt(spec_text, plan, tid, uncovered, max_files, readme_text=""):
     if plan.ticket_list():
         claimed = plan.claimed()
         lines = []
@@ -729,6 +792,8 @@ def ticket_prompt(spec_text, plan, tid, uncovered, max_files):
 SPECIFICATION (the issue being planned):
 {clip(spec_text, 2500, 'spec')}
 
+{constraints_block(readme_text)}
+
 FILE LAYOUT (fixed -- every path a ticket touches must appear here):
 {chr(10).join('- ' + p for p in plan.layout)}
 
@@ -758,6 +823,8 @@ RULES
 - goal: one sentence on one line. If it needs an "and", the ticket is too big.
 - details: 40-80 words telling a worker what to implement, referring to sections
   of the README rather than restating them.
+- Do not describe work that needs a package outside the sanctioned list above.
+  The worker cannot install one, so such a ticket is refused rather than built.
 - title: at most 72 characters.
 
 REPLY WITH EXACTLY THIS JSON SHAPE AND NOTHING ELSE:
@@ -1085,7 +1152,7 @@ def cmd_plan(a, plan):
             return err
 
         obj, raw = ask(cfg, f"ticket {tid}",
-                       ticket_prompt(spec_text, plan, tid, unc, a.max_files),
+                       ticket_prompt(spec_text, plan, tid, unc, a.max_files, readme_text),
                        check, plan, stats=attempts)
         rec = holder["rec"]
         # Provenance: the sha256 of the exact reply this ticket was built from.
@@ -1169,7 +1236,8 @@ def cmd_measure(a, plan):
                 scratch.tickets[rec["id"]] = rec
                 scratch.order.append(rec["id"])
             tid = next_free_id(scratch)
-            messages = ticket_prompt(spec_text, scratch, tid, uncovered(scratch), a.max_files)
+            messages = ticket_prompt(spec_text, scratch, tid, uncovered(scratch),
+                                     a.max_files, readme_text)
             validate = lambda o: build_ticket(scratch, tid, o, max_files=a.max_files)[1]
         else:
             messages = layout_prompt(spec_text, readme_text, a.min_paths, a.max_paths)

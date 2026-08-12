@@ -167,19 +167,66 @@ CLAIM_MARK     = "p4-claim"
 HEARTBEAT_MARK = "p4-heartbeat"
 DEFECT_MARK    = "p4-defect"
 
-# Files a test run leaves behind. They are not source edits, and a target repo
-# without a .gitignore would otherwise trip the scope gate on its own artefacts.
-# Narrow on purpose: everything else outside the declared list is a violation.
+# Files a test run or a build leaves behind. They are not source edits, and a
+# target repo without a .gitignore would otherwise trip the scope gate on its own
+# artefacts. Narrow on purpose: everything else outside the declared list is a
+# violation.
+#
+# The build entries are here because installing the project's own manifest builds
+# it, and setuptools builds IN TREE: `pip install .` leaves `<name>.egg-info/`
+# and `build/lib/...` beside the source every time. A real run reached a passing
+# acceptance command and a passing suite and was then refused at the scope gate
+# for seven files no ticket could have declared.
+#
+# `build/` is NOT exempt wholesale - it is a plausible name for a source
+# directory, and forgiving a whole tree is how an undeclared file gets committed.
+# Only the subdirectories setuptools itself creates under it are.
 ARTIFACT_RE = re.compile(r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|"
                          r"\.ruff_cache|\.hypothesis|node_modules|\.coverage|"
-                         r"htmlcov|\.tox)(/|$)"
-                         r"|\.pyc$|\.pyo$|(^|/)\.coverage\.[^/]+$")
+                         r"htmlcov|\.tox|\.eggs)(/|$)"
+                         r"|\.pyc$|\.pyo$|(^|/)\.coverage\.[^/]+$"
+                         r"|(^|/)[^/]+\.egg-info(/|$)"
+                         r"|(^|/)build/(lib|bdist|scripts|temp)[^/]*(/|$)")
 
 # Dependency manifests. A ticket may legitimately declare one; what it may not do
-# is add a package the target README never mentions.
+# is add a package outside what the target README sanctions.
 MANIFESTS = {"requirements.txt", "requirements-dev.txt", "pyproject.toml",
              "setup.py", "setup.cfg", "package.json", "Gemfile", "go.mod",
              "Cargo.toml"}
+
+# The one section of the target README that carries technical content, and the
+# only source of dependency permission in the system. ORCHESTRATOR.md, "What the
+# specification must contain", defines it; spelling drift here means every
+# package is refused, so verify-worker.sh compares the two.
+SEC_CONSTRAINTS = "Implementation constraints"
+
+# Keys that describe the project rather than name a package. A quoted string on
+# one of these lines is a title, a person or a URL, never a distribution.
+MANIFEST_KEYS = {"name", "version", "description", "python", "authors", "readme",
+                 "license", "scripts", "requires-python", "build-backend",
+                 "module", "go", "main", "classifiers", "keywords", "urls",
+                 "packages", "include", "exclude", "entry-points"}
+
+# A key whose value opens a list or a table: `dependencies = [...]`,
+# `"devDependencies": {...}`, `test = ["pytest"]` under
+# [project.optional-dependencies]. Every quoted string inside is a candidate
+# package, which is what the per-line scan below cannot see on its own -- and
+# `dependencies = ["requests"]`, all on one line, is the form a model writing a
+# fresh pyproject.toml reaches for first.
+COLLECTION_RE = re.compile(r'^\s*"?([A-Za-z][A-Za-z0-9._-]*)"?\s*[:=]\s*[\[{]')
+
+# Keys that INTRODUCE dependencies. Not package names in either branch: `require`
+# opens a block in go.mod, `dependencies` a table in package.json.
+DEP_KEYS = {"dependencies", "dev-dependencies", "devdependencies",
+            "peerdependencies", "optionaldependencies", "optional-dependencies",
+            "requires", "require", "install_requires", "extras_require",
+            "requirements", "gems", "group"}
+
+# A quoted string that is shaped like a requirement: a bare name, optionally
+# followed by a version constraint, an extras bracket or a marker. Anything with
+# a space in it is prose and is left alone.
+REQUIREMENT_RE = re.compile(r'^([A-Za-z][A-Za-z0-9._-]{0,60})\s*(?:[<>=!~^\[;@].*)?$')
+QUOTED_RE = re.compile(r'"([^"]*)"|\'([^\']*)\'')
 
 # Markers that turn a passing test into a non-test.
 SKIP_RE = re.compile(r"@pytest\.mark\.(skip|skipif|xfail)|pytest\.skip\(|"
@@ -478,6 +525,40 @@ def check_files(paths):
     return None
 
 
+def deps_dir(cfg):
+    """Where installed packages go. NOT the repository, and not the image.
+
+    The worker's rootfs is read-only by design, so there is nowhere on it to
+    install to: site-packages is unwritable, and pip's own fallback to a user
+    install lands on `~/.local`, which is equally read-only. That failed with
+    `[Errno 30] Read-only file system: '/home/worker/.local'` after downloading
+    every wheel successfully, which reads like a network problem and is not one.
+
+    The workspace tmpfs is the only writable place, so packages go beside the
+    checkout rather than inside it. Beside, not inside, matters: anything under
+    the repository would be a file the scope gate has to forgive, and the scope
+    gate forgiving a whole directory tree is how an undeclared file gets
+    committed."""
+    return os.path.join(cfg["workspace"], ".pydeps")
+
+
+def run_env(cfg):
+    """The environment the acceptance command and the test suite run in.
+
+    Whatever was installed into the workspace has to be importable, or the
+    install was pointless; `pip install --target` puts nothing on the default
+    path. Console scripts land in its `bin/`, so PATH gets it too - a project
+    whose acceptance command is its own entry point needs that."""
+    env = dict(os.environ)
+    target = deps_dir(cfg)
+    if not os.path.isdir(target):
+        return env
+    env["PYTHONPATH"] = os.pathsep.join(
+        [target] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    env["PATH"] = os.pathsep.join([os.path.join(target, "bin"), env.get("PATH", "")])
+    return env
+
+
 def install_declared_dependencies(cfg, repo_dir, rep):
     """Install what the PROJECT declares, after writing files and before acceptance.
 
@@ -504,10 +585,27 @@ def install_declared_dependencies(cfg, repo_dir, rep):
     #
     # Not -q either. A quiet install that fails prints "See above for output"
     # with nothing above it, which turns a precise error into a guess.
+    #
+    # --target sends everything to the workspace, for the read-only-rootfs reason
+    # in deps_dir(). It also has to be spelled out rather than left to pip's
+    # fallback: pip picks the user site itself, silently, and that choice is the
+    # one that does not work here.
+    target = deps_dir(cfg)
+
+    # pip unpacks every wheel through TMPDIR before moving it into place, and the
+    # worker's /tmp is an 8 MB tmpfs. One `pydantic_core` wheel is larger than
+    # that unpacked, so the install died with `[Errno 28] No space left on
+    # device` AFTER downloading everything successfully - which reads like a disk
+    # problem on the host and is not one. The workspace tmpfs is the big one, so
+    # scratch goes there too.
+    env = dict(os.environ)
+    env["TMPDIR"] = os.path.join(cfg["workspace"], ".pip-tmp")
+    os.makedirs(env["TMPDIR"], exist_ok=True)
+
     manifests = [
-        (["pip", "install", "--disable-pip-version-check",
+        (["pip", "install", "--disable-pip-version-check", "--target", target,
           "-r", "requirements.txt"], "requirements.txt"),
-        (["pip", "install", "--disable-pip-version-check",
+        (["pip", "install", "--disable-pip-version-check", "--target", target,
           "--no-build-isolation", "."], "pyproject.toml"),
     ]
     for cmd, fname in manifests:
@@ -515,9 +613,10 @@ def install_declared_dependencies(cfg, repo_dir, rep):
         if not os.path.isfile(path):
             continue
         rep.heartbeat(f"installing dependencies from {fname}")
-        rc, out = run(cmd, cwd=repo_dir, timeout=cfg.get("install_timeout", 600))
+        rc, out = run(cmd, cwd=repo_dir, timeout=cfg.get("install_timeout", 600),
+                      env=env)
         if rc == 0:
-            say(f"  installed dependencies from {fname}")
+            say(f"  installed dependencies from {fname} into {target}")
         else:
             # Not fatal on its own: the acceptance command is the real verdict,
             # and a manifest can fail to install for reasons that do not matter
@@ -874,38 +973,104 @@ def weakening_error(path, old, new):
     return None
 
 
+def normalise_pkg(name):
+    """PEP 503-ish folding, applied to both sides of the comparison so that
+    `ruamel.yaml`, `ruamel-yaml` and `Ruamel_YAML` are one package and not three
+    ways past the check."""
+    return re.sub(r"[-_.]+", "-", (name or "").strip().lower())
+
+
+def sanctioned_packages(readme):
+    """The set the target README's '## Implementation constraints' section names.
+
+    None means the section is absent, which is NOT the same as an empty list: an
+    empty list is a human saying "standard library only", and an absent section
+    is a specification that never considered the question. Both sanction
+    nothing; only one of them is a defect worth reporting.
+
+    Prose inside the section is ignored, so the human can explain the rule. Only
+    '- name' lines carry permission, matching how every other list in this
+    system is written. A version constraint after the name is tolerated and
+    discarded: the check is about identity, not about pinning."""
+    if readme is None:
+        return None
+    section, found = [], False
+    for line in readme.splitlines():
+        m = re.match(r"^\s{0,3}#{1,6}\s+(.+?)\s*$", line)
+        if m:
+            if found:                      # the next heading ends the section
+                break
+            found = normalise_pkg(m.group(1)) == normalise_pkg(SEC_CONSTRAINTS)
+            continue
+        if found:
+            section.append(line)
+    if not found:
+        return None
+    names = set()
+    for line in section:
+        m = re.match(r"^\s*[-*]\s+`?([A-Za-z][A-Za-z0-9._-]{0,60})`?", line)
+        if m:
+            names.add(normalise_pkg(m.group(1)))
+    return names
+
+
 def dependency_error(path, old, new, readme):
     """Narrow, deliberate check: a ticket may declare a manifest, but a package
-    the target README never mentions is a dependency the README does not
-    sanction. Line-based and manifest-only - it will not catch an import added
-    to source code, which is stated as a known gap rather than papered over.
+    outside the README's sanctioned set is a dependency nobody granted.
+    Line-based and manifest-only - it will not catch an import added to source
+    code, which is stated as a known gap rather than papered over.
 
-    A project with no README sanctions nothing. That is the conservative reading
-    and also the loud one: the run has already warned that it is writing code
-    against a specification that is not there."""
+    The comparison is against a parsed list and is exact. It used to be a
+    substring test over the whole README, which is not an allowlist at all: a
+    package called `api` was sanctioned by the word "API" appearing anywhere in
+    the prose, and `re` by the word "are". The permission has to come from a
+    place a human wrote on purpose.
+
+    A README with no constraints section sanctions nothing, and neither does a
+    project with no README. That is the conservative reading and also the loud
+    one: the run has already warned that the specification does not say."""
     if os.path.basename(path) not in MANIFESTS:
         return None
-    readme_l = (readme or "").lower()
+    allowed = sanctioned_packages(readme) or set()
     added = [ln.strip() for ln in new.splitlines()
              if ln.strip() and ln.strip() not in (old or "").splitlines()]
     unsanctioned = []
     for line in added:
         if line.startswith("#") or line.startswith("//"):
             continue
+        # A key opening a list or a table: read what is inside it, because one
+        # line can carry a whole dependency set. Without this branch,
+        # `dependencies = ["requests"]` is a line whose first token is
+        # `dependencies`, and the check walks straight past it.
+        coll = COLLECTION_RE.match(line)
+        if coll:
+            if coll.group(1).lower() in MANIFEST_KEYS:
+                continue                      # authors = [{name = "..."}], classifiers, ...
+            for double, single in QUOTED_RE.findall(line):
+                cand = (double or single).strip()
+                req = REQUIREMENT_RE.match(cand)
+                if not req:
+                    continue                  # a version, a URL, a sentence
+                name = req.group(1)
+                if name.lower() in MANIFEST_KEYS or name.lower() in DEP_KEYS:
+                    continue                  # the key itself, quoted, in JSON
+                if normalise_pkg(name) not in allowed:
+                    unsanctioned.append(name)
+            continue
         m = re.match(r'^\s*"?([A-Za-z][A-Za-z0-9._-]{1,40})"?\s*[:=<>~!\s"]', line + " ")
         if not m:
             continue
         name = m.group(1)
-        if name.lower() in ("name", "version", "description", "requires", "dependencies",
-                            "python", "authors", "readme", "license", "scripts",
-                            "requires-python", "build-backend", "module", "go", "main"):
+        if name.lower() in MANIFEST_KEYS or name.lower() in DEP_KEYS:
             continue
-        if name.lower() not in readme_l:
+        if normalise_pkg(name) not in allowed:
             unsanctioned.append(name)
     if unsanctioned:
+        listed = ", ".join(sorted(allowed)) if allowed else "(nothing)"
         return (f"{path} would add {', '.join(sorted(set(unsanctioned)))}, which the "
-                "target README does not mention. ORCHESTRATOR.md: never add a "
-                "dependency the target README does not sanction")
+                f"target README does not sanction. Its '## {SEC_CONSTRAINTS}' section "
+                f"permits: {listed}. ORCHESTRATOR.md: never add a dependency outside "
+                "that list")
     return None
 
 
@@ -925,6 +1090,7 @@ NEEDS_SCHEMA = '{"needs_file": "<the path you would need>", "reason": "<one line
 def file_prompt(cfg, ticket, target, readme, contents, failure=None):
     """One user message. `contents` maps declared path -> current text (either
     what is in the checkout or what this run has produced so far)."""
+    allowed = sanctioned_packages(readme) or set()
     others = [p for p in ticket["files"] if p != target]
     ctx = []
     for p in others:
@@ -979,7 +1145,16 @@ def file_prompt(cfg, ticket, target, readme, contents, failure=None):
         f"  - Answer about {target} and no other file. Other paths are other calls.",
         "  - Do not create, mention as created, or write any file outside the list above.",
         "  - Never modify the README. Never delete or skip a test.",
-        "  - Add no third-party dependency the README does not already sanction.",
+        # Naming the list beats pointing at it. The model is a small one and the
+        # README is up to 6000 characters away in the same message; "the packages
+        # the README sanctions" asks it to go and find them, which it does not
+        # reliably do. The refusal is enforced in code either way - this only
+        # decides whether the run ends in a pull request or in exit 10.
+        "  - " + (
+            "Add no third-party dependency. Only the standard library is sanctioned."
+            if not allowed else
+            "Add no third-party dependency outside the packages the README sanctions: "
+            + ", ".join(sorted(allowed)) + "."),
         "  - Return the WHOLE file, not a diff, not a fragment, not an ellipsis.",
         "",
         "REPLY with exactly one JSON object:",
@@ -1284,6 +1459,17 @@ def main(argv=None):
     if not readme:
         warn("the target repository has no README; the model is being asked to write "
              "code against a specification that is not there")
+    # Said up front, not discovered at exit 10. If this ticket needs a package,
+    # the run is already lost at this point and the reason is a property of the
+    # specification, not of anything the model is about to do.
+    allowed = sanctioned_packages(readme)
+    if allowed is None:
+        warn(f"the target README has no '## {SEC_CONSTRAINTS}' section, so it "
+             "sanctions no third-party package. A ticket needing one cannot be "
+             "built until a human adds that section (ORCHESTRATOR.md: What the "
+             "specification must contain)")
+    else:
+        say(f"  README sanctions: {', '.join(sorted(allowed)) or 'the standard library only'}")
     existing = read_existing(repo_dir, ticket["files"])
     contents = dict(existing)
 
@@ -1327,7 +1513,8 @@ def main(argv=None):
     accept_output = ""
     for attempt in range(1, cfg["attempts"] + 1):
         rep.heartbeat(f"running the acceptance command (attempt {attempt}/{cfg['attempts']})")
-        rc, out = run(accept_cmd, cwd=repo_dir, timeout=cfg["acceptance_timeout"])
+        rc, out = run(accept_cmd, cwd=repo_dir, timeout=cfg["acceptance_timeout"],
+                      env=run_env(cfg))
         say(f"  acceptance attempt {attempt}/{cfg['attempts']}: "
             f"`{ticket['acceptance']}` -> exit {rc}")
         if rc == 0:
@@ -1377,7 +1564,8 @@ def main(argv=None):
     # ---- 5. the project's full test suite ---------------------------------- #
     suite_cmd = shlex.split(cfg["test_command"])
     rep.heartbeat("running the project's full test suite")
-    rc, suite_out = run(suite_cmd, cwd=repo_dir, timeout=cfg["suite_timeout"])
+    rc, suite_out = run(suite_cmd, cwd=repo_dir, timeout=cfg["suite_timeout"],
+                        env=run_env(cfg))
     say(f"  full suite: `{cfg['test_command']}` -> exit {rc}")
     if rc != 0:
         rep.comment(f"The acceptance command passed but the project's full test suite "

@@ -153,6 +153,26 @@ emit({l for l in labels if l.startswith("priority:")} <= {f"priority:{n}" for n 
 # The prohibition the SAFE-README check is derived from must still be in force.
 emit("modify the target project's README" in text,
      "contract still prohibits touching the target README (SAFE-README's basis)")
+
+# The dependency policy. The planner cannot enforce it -- deciding which words in
+# a Details paragraph are packages is not a check anyone has written -- but it
+# must at least be TOLD the list, or it plans a stack the worker will refuse.
+# This is the run-1 failure: "Create a FastAPI app" for a spec sanctioning pytest.
+plan_path = os.path.join(os.path.dirname(lint_path), "p3-plan.py")
+pspec = importlib.util.spec_from_file_location("p3plan", plan_path)
+p3 = importlib.util.module_from_spec(pspec); pspec.loader.exec_module(p3)
+
+emit(p3.SEC_CONSTRAINTS == "Implementation constraints"
+     and f"## {p3.SEC_CONSTRAINTS}" in text,
+     f"the planner reads the section the contract defines: '## {p3.SEC_CONSTRAINTS}'")
+
+readme = f"# p\n\nA thing with an API.\n\n## {p3.SEC_CONSTRAINTS}\n\n- fastapi\n- pytest\n"
+layout = p3.layout_prompt("build it", readme, 3, 40)[1]["content"]
+emit("fastapi" in layout and "pytest" in layout and "SANCTIONED" in layout,
+     "the layout call -- the one that picks the stack -- is given the sanctioned list")
+
+emit("standard library" in p3.constraints_block("# p\n\nno constraints section").lower(),
+     "a spec that sanctions nothing tells the planner to plan against the stdlib")
 PY
 
 python3 "$WORK/contract-agreement.py" "$CONTRACT" "$LINT" "$GOOD" > "$WORK/agreement.txt" 2>&1 \

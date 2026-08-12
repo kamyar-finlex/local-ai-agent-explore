@@ -8,6 +8,13 @@ are fixed, committed and identical on every run.
 Nothing about this file is trip-planner-shaped, on purpose. The worker must work
 against **any** repository, so the fixture deliberately has no domain at all.
 
+There is no API here, nothing requests anything over a network, and no module is
+re-exported from another. Those three sentences are bait, and they are load
+bearing: `api`, `requests` and `re` are all real packages on PyPI, and each one
+appears as a substring of the prose above. A dependency check that searched this
+file for a package name would sanction all three. The check does not search this
+file — it reads one section, by name, and compares whole names.
+
 ## Layout
 
 - `src/` — the package. Imported as `src.<module>`; there is no `__init__.py`
@@ -16,11 +23,17 @@ against **any** repository, so the fixture deliberately has no domain at all.
 - `conftest.py` — empty. It exists only so pytest puts the repository root on
   `sys.path`, which is what makes `from src.util import ...` work from `tests/`.
 
-## Dependencies
+## Implementation constraints
 
-The Python standard library and **pytest**. Nothing else is sanctioned: a ticket
-that needs another package is a ticket a human has to approve first, and the
-worker's container cannot reach a package registry anyway.
+The implementation may use these Python packages and no others. Anything else
+must be solved with the standard library: a ticket that needs another package is
+a ticket a human has to sanction here first, by editing this section.
+
+- pytest
+
+The heading above is the one the worker looks for by name, spelled exactly that
+way — see `ORCHESTRATOR.md`, "What the specification must contain". Prose in this
+section, including this paragraph, carries no permission; only the `- ` lines do.
 
 ## Running the tests
 

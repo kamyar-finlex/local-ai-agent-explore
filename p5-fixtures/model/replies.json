@@ -195,17 +195,24 @@
       }
     },
     "dependency-bad": {
-      "_why": "Issue #44. The manifest reply adds a package the target README never mentions. ORCHESTRATOR.md: no dependency the README does not sanction - and the worker's container cannot reach a registry anyway, so a run that got this far would fail later and less clearly.",
+      "_why": "Issue #44. The manifest reply adds a package the target README does not sanction. ORCHESTRATOR.md: no dependency outside the README's '## Implementation constraints' list - and the worker's container reaches a registry, so an unsanctioned package would actually be installed and run.",
       "requirements.txt": {
         "path": "requirements.txt",
         "contents": "pytest\nrequests==2.31.0\n"
       }
     },
     "dependency-ok": {
-      "_why": "Issue #44 again, with only what the README's Dependencies section already sanctions. The positive control for the check above: it must permit a legitimate manifest, or it would block the work it is meant to police.",
+      "_why": "Issue #44 again, with only what the README's '## Implementation constraints' section sanctions. The positive control for the check above: it must permit a legitimate manifest, or it would block the work it is meant to police.",
       "requirements.txt": {
         "path": "requirements.txt",
         "contents": "pytest\n"
+      }
+    },
+    "dependency-substring": {
+      "_why": "Issue #44 a third time. Every package here is a real PyPI distribution whose name is a SUBSTRING of the fixture README's prose - 'api' in \"no API here\", 'requests' in \"nothing requests anything\", 're' in \"re-exported\". None is on the sanctioned list. The check used to be a substring search over the whole README and would have permitted all three; this scenario is the regression test that it is now an exact match against one named section.",
+      "requirements.txt": {
+        "path": "requirements.txt",
+        "contents": "pytest\napi\nrequests\nre\n"
       }
     },
     "no-change": {

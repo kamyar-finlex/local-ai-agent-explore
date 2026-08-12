@@ -105,7 +105,7 @@ the model was not asked about.
 | carries `files` / `extra_files` | "one file per reply" | exit 3 |
 | `contents` empty, huge, or NUL-bearing | the limit it broke | exit 3 |
 | a test function disappeared, or a `skip`/`xfail` appeared | which test | exit 11 |
-| a manifest gained a package the README never mentions | which package | exit 10 |
+| a manifest gained a package the README does not sanction | which package, and what the README does permit | exit 10 |
 | the endpoint is down or answered empty | nothing to feed back; backoff | exit 3 |
 
 Exits 10 and 11 are separate from 3 on purpose. "The model cannot produce valid
@@ -128,10 +128,15 @@ independent layers hold it, because each catches something the others cannot:
    -uall` must show no change outside the declared list, and after staging, the
    staged diff must be a subset of it. This is the only layer that can catch a
    file created by *running the acceptance command* — the model never mentions
-   such a file, so inspecting replies cannot see it. Test-run artefacts
-   (`__pycache__`, `.pytest_cache`, `*.pyc`, …) are exempt by a narrow regex,
-   which is documented as the one hole: a repository without a `.gitignore` would
-   otherwise trip the gate on its own by-products.
+   such a file, so inspecting replies cannot see it. Test-run and build artefacts
+   (`__pycache__`, `.pytest_cache`, `*.pyc`, `<name>.egg-info/`, `build/lib/…`, …)
+   are exempt by a narrow regex, which is documented as the one hole: a repository
+   without a `.gitignore` would otherwise trip the gate on its own by-products.
+   The build entries are not hypothetical — installing the project's manifest
+   builds it, and setuptools builds in tree, so a run that passed acceptance *and*
+   the full suite was refused here for seven files no ticket could have declared.
+   `build/` is exempt only in the subdirectories setuptools creates under it;
+   `build/main.py` is source and stays a violation.
 
 The `needs_file` reply is the sanctioned way out. It writes nothing at all —
 which is why no file is written until *every* declared file has a validated
@@ -156,6 +161,46 @@ being loud about: a worker that commits after a failing acceptance command looks
 like success from the outside, and the dispatcher's validator would only catch it
 one step later, on a branch that already exists.
 
+## Dependencies: where permission comes from
+
+This is the only control between a model and arbitrary third-party code. The
+worker's container can reach PyPI — that is on the egress allowlist and
+[EGRESS.md](EGRESS.md) records it as the widest hole in it — and the worker
+installs the project's manifest before running the acceptance command. So a
+package that reaches a manifest is a package that gets fetched and executed,
+with a repository credential in the environment.
+
+Permission comes from one place: the `## Implementation constraints` section of
+the target README, defined in `ORCHESTRATOR.md` under *What the specification
+must contain*. The worker parses that section by name, takes the `- name` lines,
+and compares whole names — folded PEP 503-style, so `ruamel.yaml` and
+`ruamel_yaml` are one package rather than two ways past the check.
+
+The asymmetry this resolves is deliberate and worth restating: the **planner** is
+permitted to infer a stack from a product-shaped spec, because inferring one is
+what makes it a planner. The **worker** is not, because a component that can
+quietly decide what to install is a component that can run anything. A spec that
+names no packages therefore produces a plan that passes every mechanical check
+and cannot be executed — which is a fact about the spec, and the worker now says
+so at startup rather than at `exit 10` forty seconds in.
+
+The check has two known limits, stated rather than papered over:
+
+- **It is manifest-only.** An `import requests` added to a source file is not
+  caught here. It fails later, at the acceptance command, as an import error
+  rather than as a policy refusal.
+- **It is textual, not a manifest parser.** It reads added lines, and it reads
+  the quoted strings inside a list or table opened on one of them — which is what
+  makes `dependencies = ["requests"]`, the single-line form, visible at all; that
+  one line was walked past entirely until TECH-101. A format that spreads a
+  single dependency across several lines could still hide a name from it.
+
+It was also, until TECH-101, a substring search over the whole README, which is
+not an allowlist: `api` was sanctioned by the word "API" in a sentence of prose,
+and `re` by the word "are". All three of `api`, `requests` and `re` are real
+distributions on PyPI, and the harness now refuses all three against a fixture
+README whose prose contains every one of them.
+
 ## What is structural, and what is only checked
 
 `ORCHESTRATOR.md`'s note that "anything enforced only by a prompt is a guardrail
@@ -173,7 +218,7 @@ in this repo, because the worker is the only component that holds a credential
 | never modify the target README | refused in the ticket parser, in the reply validator, and by the scope gate |
 | never touch an undeclared file | the three layers above |
 | never weaken a test | test functions counted and skip markers compared, per existing file |
-| never add an unsanctioned dependency | manifest lines compared against the README |
+| never add an unsanctioned dependency | manifest lines compared, by exact name, against the README's `## Implementation constraints` list |
 | never leak the token | one redaction funnel for all output; `GIT_ASKPASS`, so it is in no URL, no `.git/config`, no error message |
 
 The first four are the ones that matter, and they are the ones that are absent
@@ -182,7 +227,7 @@ from the code rather than forbidden in a prompt.
 ## Verifying it
 
 ```
-./verify-worker.sh            # 116 checks, ~1m40s, no model and no GitHub
+./verify-worker.sh            # 138 checks, ~1m40s, no model and no GitHub
 ./verify-worker.sh image      # + one run inside hermes-worker:latest
 ```
 
@@ -196,7 +241,7 @@ quietly succeed.
 Measured, on the committed fixtures:
 
 ```
-RESULT: 116 passed, 0 failed
+RESULT: 138 passed, 0 failed
 ```
 
 What those checks establish, in the order the suites run:
@@ -230,8 +275,13 @@ What those checks establish, in the order the suites run:
   `@pytest.mark.skip`: both refused, exit 11, the test file byte-identical — and
   the positive control that the same rejection *recovers* when the next reply
   keeps every test.
-- **Dependencies.** A manifest adding `requests` (absent from the README): exit
-  10. A manifest with only `pytest` (sanctioned): exit 0.
+- **Dependencies.** A manifest adding `requests` (not on the README's sanctioned
+  list): exit 10, with the refusal naming both the package and the section a
+  human would have to edit to permit it. A manifest with only `pytest`
+  (sanctioned): exit 0. And a manifest adding `api`, `requests` and `re` — three
+  real distributions whose names appear as *substrings* of the fixture README's
+  prose: all three refused, which is the regression test for the check having
+  once been a substring search over the whole file.
 - **Nothing to do.** A reply identical to what is on the default branch commits
   nothing and opens no empty pull request. A branch that already exists on the
   remote stops the run and is left pointing exactly where it was.
@@ -396,7 +446,7 @@ right for a Python target and wrong for anything else.
 | `worker.py` | The worker. Script-owned control flow; the model only returns file contents |
 | `p4-worker.sh` | The container's PID 1, named by the dispatcher's default `P4_WORKER_CMD` |
 | `p4-worker-instructions.md` | What the worker does, and the whole of what the model is told |
-| `verify-worker.sh` | 116 checks, plus `image` mode and the mutation control |
+| `verify-worker.sh` | 138 checks, plus `image` mode and the mutation control |
 | `p5-fixtures/repo/` | The fixture target project: a README, a module, a test, a `conftest.py` |
 | `p5-fixtures/issues.json` | The fixture GitHub state: one conforming ticket, nine unusable ones, four more |
 | `p5-fixtures/model/replies.json` | 16 canned scenarios: good, wrong-path, prose, dead endpoint, weakening, leaking |

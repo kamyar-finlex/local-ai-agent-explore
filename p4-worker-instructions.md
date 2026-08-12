@@ -96,7 +96,7 @@ rather than parsing prose.
 | 7 | `suite-failed` | a test the worker did not write failed; nothing committed |
 | 8 | `git-failed` | clone, push or pull-request creation failed |
 | 9 | `scope-violation` | a file outside the declared list changed; nothing committed |
-| 10 | `unsanctioned-dep` | a dependency the target README does not sanction |
+| 10 | `unsanctioned-dep` | a dependency outside the README's `## Implementation constraints` list |
 | 11 | `test-weakened` | the reply removed, skipped or xfailed a test |
 
 Exit `5` is the one worth dwelling on. **Stopping is a correct, useful outcome**:
@@ -137,7 +137,9 @@ RULES
   - Answer about <path> and no other file. Other paths are other calls.
   - Do not create, mention as created, or write any file outside the list above.
   - Never modify the README. Never delete or skip a test.
-  - Add no third-party dependency the README does not already sanction.
+  - Add no third-party dependency outside the packages the README sanctions:
+    <the names from its '## Implementation constraints' section, listed here
+     verbatim; or "Only the standard library is sanctioned" when it names none>
   - Return the WHOLE file, not a diff, not a fragment, not an ellipsis.
 
 REPLY with exactly one JSON object:
@@ -157,7 +159,8 @@ The reply is checked before it becomes a byte on disk:
   `P5_MAX_FILE_BYTES`.
 - for an existing test file: no test function may disappear and no `skip`/`xfail`
   marker may appear that was not there before.
-- for a dependency manifest: no package name the target README does not mention.
+- for a dependency manifest: no package outside the target README's
+  `## Implementation constraints` list, compared by whole name.
 
 ## Never
 
@@ -180,7 +183,8 @@ enforced by the checks listed above.
   under test.
 - Never weaken, skip or delete a test to make a run pass. A failing test is the
   most useful output this system produces.
-- Never add a dependency the target README does not already sanction.
+- Never add a dependency the target README's `## Implementation constraints`
+  section does not name. A README without that section sanctions nothing.
 - Never print, echo, commit or comment the token. Everything the worker prints
   goes through one redaction funnel, and the token reaches git through
   `GIT_ASKPASS` rather than a URL, so it is in no remote, no `.git/config` and no

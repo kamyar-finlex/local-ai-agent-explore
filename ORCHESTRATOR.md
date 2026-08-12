@@ -25,6 +25,65 @@ and its own issue.
 
 **Human** — approves and merges. Nothing else.
 
+## What the specification must contain
+
+The target README is the specification. It is written by a human, before any
+agent runs, and it is the only document the planner plans from and the only one
+the worker is given besides its own ticket.
+
+It must describe **the product** — what the thing does, for whom, what a good
+result looks like — and it must **not** describe the implementation. Choosing a
+file layout and a stack is the planner's job; a README that has already made
+those choices has done the planner's work for it, and there is nothing left to
+find out.
+
+There is exactly one exception, and it exists because of an asymmetry that is
+deliberate on both sides:
+
+- The planner **may infer** a stack from a product-shaped spec. That is what
+  makes it a planner rather than a transcriber.
+- The worker **may not infer** one. A model that can quietly decide what to
+  install is a model that can fetch and execute arbitrary third-party code, with
+  a credential in its environment, from a public index.
+
+So a stack-silent spec produces a plan that passes every mechanical check and
+cannot be executed: the planner reasonably chooses a framework, and no worker is
+ever permitted to install it. The spec closes that gap by naming the packages
+it sanctions, and nothing else about the implementation:
+
+```markdown
+## Implementation constraints
+
+The implementation may use these Python packages and no others. Anything else
+must be solved with the standard library.
+
+- fastapi
+- uvicorn
+- pydantic
+- pytest
+- httpx
+```
+
+- The heading is **`## Implementation constraints`**, spelled exactly that way.
+  The worker looks for it by name; a section called something else is prose.
+- One package per line, prefixed `- `, the bare distribution name. Prose in the
+  section is ignored, so the sentences around the list are free text.
+- The list is **exhaustive and project-wide**. A package not on it is refused at
+  the moment a worker would write it into a manifest, whatever the ticket says.
+- **A spec with no such section sanctions nothing.** That is the conservative
+  reading, and the loud one: a plan needing any third-party package is then
+  unbuildable, which is a fact about the spec worth discovering at the first
+  worker rather than at the fortieth.
+
+Naming a package here is a *permission*, not an instruction. The list is an
+upper bound on what may be installed; the planner still decides what the project
+actually uses, and may use less.
+
+This is the smallest amount of technical content that makes a plan executable,
+and it is the boundary this project settled on: **everything about how the thing
+is built is the planner's to choose, except the set of third-party code it is
+allowed to run, which is a human's to grant.**
+
 ## Ticket state — labels are the source of truth
 
 Not the project board. A board may mirror this for visibility (GitHub's built-in
@@ -100,6 +159,12 @@ proves it — because "set up the project" is not something a small model can ac
 **Tests belong to the ticket that creates the code**, not to a separate testing
 ticket.
 
+**Plan inside the sanctioned package list.** The planner is free to choose the
+architecture, and not free to choose the dependencies: a ticket that cannot be
+implemented without a package the spec does not sanction is unbuildable, and the
+worker will refuse it rather than install it. Where the list is empty or absent,
+plan against the standard library.
+
 **Every ticket must be workable standalone**, by a worker that has read only the
 target README and that one issue.
 
@@ -127,7 +192,8 @@ Ready tickets are dispatched in priority order, then by issue number.
 - Run the acceptance command. It must pass before opening a pull request.
 - Run the project's full test suite. It must also pass.
 - Open a pull request whose body references the issue as `Closes #N`.
-- Add no dependency the target README does not already sanction.
+- Add no dependency outside the target README's `## Implementation constraints`
+  list. A README without that section sanctions nothing.
 
 ## Validation, before a worker's PR is considered done
 
@@ -154,7 +220,8 @@ No agent may ever:
 - **commit to the default branch, or force-push anything**
 - **weaken, skip or delete a test to make a run pass** — a failing test is the most
   useful output this system produces
-- **add a dependency** the target project's README does not sanction
+- **add a dependency** the target README's `## Implementation constraints`
+  section does not name
 
 The first two are enforced outside the agent, not by instruction: a token scoped
 without merge permission, and branch protection on the default branch. Anything

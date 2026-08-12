@@ -6,8 +6,14 @@ that looks like a real one, offline and without a target repository.
 
 ## Setup
 
-Python 3.11+, a `src/` layout, and `pytest` as the only development dependency,
-declared in `pyproject.toml`. No other dependency is sanctioned.
+Python 3.11+, a `src/` layout, and a dependency manifest in `pyproject.toml`.
+
+## Implementation constraints
+
+The implementation may use these Python packages and no others. Anything else
+must be solved with the standard library.
+
+- pytest
 
 ## Data model
 
