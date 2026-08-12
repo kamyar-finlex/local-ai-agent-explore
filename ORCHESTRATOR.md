@@ -91,17 +91,24 @@ auto-add workflow does it without any code), but nothing reads the board.
 
 | Label | Meaning | Who sets it |
 |---|---|---|
-| `spec` | This issue is a specification to plan from | Human |
-| `status:backlog` | Awaiting human approval. **Never dispatched.** | Planner, on creation |
-| `status:todo` | Approved. Eligible for dispatch. | **Human only** |
+| `spec` | This issue is a specification to plan from. Never dispatched. | Human |
+| `status:backlog` | Not started | Planner, on creation |
+| `status:todo` | Not started. Kept for continuity; means the same as backlog | Human |
 | `status:in-progress` | Claimed by a worker | Dispatcher |
 | `status:blocked` | Has at least one open `Blocked-by` | Planner or dispatcher |
-| `status:done` | Its pull request was merged | Human, or a merge automation |
+| `status:done` | Its pull request was merged. Never re-dispatched. | Human, or a merge automation |
 | `priority:1` … `priority:4` | 1 is highest | Planner |
 
-The swap from `status:backlog` to `status:todo` is the **only** thing that starts
-work. An agent that relabels its own issue has defeated the review gate, so that is
-prohibited below rather than merely discouraged.
+**Asking for the work is the approval.** Dispatch once required `status:todo`, set
+by a human and by nobody else, and a ticket in `status:backlog` was never started.
+That gate is gone: a person saying "start #6" has said everything the label said,
+and requiring them to also flip it in a browser was ceremony rather than review.
+Backlog and todo are dispatched alike.
+
+What this costs, stated plainly rather than discovered later: **nothing now stands
+between a prompt and a worker writing code.** The remaining dispatch rules are
+about correctness, not permission. The human gate is the prompt itself, and the
+pull request at the end — which no agent may merge — is the review.
 
 ## Ticket format
 
@@ -172,15 +179,20 @@ target README and that one issue.
 
 A ticket is dispatched only when **all** of these hold:
 
-1. It carries `status:todo`.
+1. It is open, and carries neither `spec` nor `status:done`.
 2. Every issue listed under `Blocked-by` is closed.
 3. Its `Files touched` list does not intersect that of any ticket currently
    `status:in-progress`.
 4. It has a parseable `Acceptance criteria` command.
 
 Otherwise it is skipped and left for the next poll. A ticket failing rule 2 or 3 is
-normal and expected; a ticket failing rule 1 or 4 should be reported, because it
-means the planner produced something unusable.
+normal and expected; a ticket failing rule 4 should be reported, because it means
+the planner produced something unusable.
+
+Rules 2 and 3 are not approval in disguise. Rule 2 stops a worker building on a
+foundation that does not exist yet, and rule 3 is the entire mechanism by which
+two workers run at once without colliding — remove it and parallelism becomes two
+agents editing one file.
 
 Ready tickets are dispatched in priority order, then by issue number.
 
@@ -212,10 +224,11 @@ failure modes this experiment is meant to surface.
 
 No agent may ever:
 
-- **merge a pull request** — humans merge
-- **move an issue to `status:todo`** — approval is a human act, and an agent doing it
-  removes the review gate entirely
-- **modify the target project's README**, or another issue's description
+- **merge a pull request** — humans merge. With the approval gate gone this is now
+  the *only* remaining human gate, so it matters more than it did, not less.
+- **modify the target project's README**, or another issue's description — the
+  README is the specification, including the package list a worker is held to, and
+  an agent that can edit it can sanction its own dependencies
 - **change files outside its ticket's declared list**
 - **commit to the default branch, or force-push anything**
 - **weaken, skip or delete a test to make a run pass** — a failing test is the most
@@ -223,8 +236,10 @@ No agent may ever:
 - **add a dependency** the target README's `## Implementation constraints`
   section does not name
 
-The first two are enforced outside the agent, not by instruction: a token scoped
-without merge permission, and branch protection on the default branch. Anything
+The first is enforced outside the agent, not by instruction: a token scoped
+without merge permission, plus branch protection on the default branch. Verify that
+protection is actually switched on — the target repository's `main` was found
+unprotected while this document claimed it as a control. Anything
 enforced only by a prompt is a guardrail against accident, not a control — a lesson
 this project learned the hard way when an agent was refused a `/tmp` write by its own
 tool allowlist and then wrote there through the shell moments later.

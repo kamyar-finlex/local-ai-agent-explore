@@ -13,11 +13,11 @@ metadata:
 
 # Orchestrator Dispatch
 
-Hand approved tickets to worker containers, several at once.
+Hand tickets to worker containers, several at once.
 
 **You do not decide anything here.** Readiness is arithmetic and the script owns
-it: a ticket runs only when a human has approved it, its blockers are closed, and
-its declared files do not collide with anything already in flight. Your job is to
+it: a ticket runs when its blockers are closed and its declared files do not
+collide with anything already in flight. Your job is to
 run one command and report what came back honestly — including when the answer is
 "nothing was ready".
 
@@ -28,14 +28,18 @@ the review gate the whole workflow rests on.
 ## When to Use
 
 **Use this whenever a human asks to start, implement, build, code or work on a
-ticket, or to dispatch work.** Those all mean the same thing here: hand approved
-tickets to workers. Creating tickets is `orchestrator-planner`; if tickets already
-exist, planning again duplicates them.
+ticket, or to dispatch work.** Those all mean the same thing here: hand tickets to
+workers. Creating tickets is `orchestrator-planner`; if tickets already exist,
+planning again duplicates them.
 
-- A human has moved one or more tickets to `status:todo` and work should start.
+**Being asked is the approval.** There is no label to wait for. A ticket sitting in
+`status:backlog` dispatches exactly like one in `status:todo` — if the human asked
+for it and the script says it is ready, run it. Do not tell them to go and approve
+something first; that gate was removed on purpose.
+
+- A human names a ticket, or asks what is ready, and work should start.
 - Someone asks what is ready, or why a particular ticket has not started.
-- Don't use for: approving tickets (`status:todo` is a human act — see the
-  prohibitions below), planning (that is `orchestrator-planner`), or merging.
+- Don't use for: planning (that is `orchestrator-planner`), or merging.
 
 ## Prerequisites
 
@@ -78,8 +82,9 @@ terminal(command="python3 $P4/p4-dispatch-loop.py reap")
 
 - **Do not decide a ticket is ready.** If the script skipped it, it is not ready,
   whatever the ticket looks like to you.
-- **Do not relabel anything to `status:todo`.** Approval is a human act. An agent
-  that approves its own work has removed the only gate in this system.
+- **Do not relabel tickets at all.** The script owns every label it sets. There is
+  no approval label to apply any more, so a relabel by you is either pointless or
+  a lie about state.
 - **Do not merge a pull request**, ever.
 - **Do not edit tickets** to make them dispatchable. A ticket the script calls
   malformed is a planning defect: report it and stop.
@@ -93,7 +98,8 @@ terminal(command="python3 $P4/p4-dispatch-loop.py reap")
 
 | Reason | What to tell the human |
 |---|---|
-| not approved | still `status:backlog`; they need to move it to `status:todo` |
+| spec issue | it is a specification to plan from, not work to do |
+| already done | its pull request was merged; it is not re-run |
 | blocker #N is open | working as designed — #N must close first |
 | files overlap #N | the two tickets touch the same file, so they cannot run together |
 | malformed | a planning defect; quote it and stop |
@@ -104,6 +110,6 @@ looking for something to do.
 ## Verification
 
 - [ ] `plan` ran and its output was reported before anything was dispatched
-- [ ] every dispatched ticket was `status:todo` with all blockers closed
-- [ ] no ticket was relabelled to `status:todo` by you
+- [ ] every dispatched ticket had all its blockers closed and no file overlap
+- [ ] no ticket was relabelled by you
 - [ ] container names and ticket numbers reported back to the human

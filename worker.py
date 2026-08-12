@@ -1415,8 +1415,14 @@ def choose_retry_target(ticket, failure, contents):
 def main(argv=None):
     cfg = config(argv)
     say(f"worker: issue #{cfg['issue']} in {cfg['repo']}")
+    # max_tokens is printed because it is injected, not configured locally: it
+    # only reaches a worker if WORKER_ENV_ALLOWLIST carries its name, and when it
+    # does not, worker.py falls back to 4096 with nothing in the log to say so.
+    # A run then burns its budget reasoning, or truncates a file mid-literal, and
+    # reads as a model failure. Both happened before anyone noticed the number.
     say(f"  model {cfg['model']} at {cfg['url']}  "
-        f"(retries {cfg['retries']}, acceptance attempts {cfg['attempts']})")
+        f"(retries {cfg['retries']}, acceptance attempts {cfg['attempts']}, "
+        f"max_tokens {cfg['max_tokens']})")
     say(f"  workspace {cfg['workspace']}, origin "
         f"{'(fixture) ' if cfg['github'] else ''}{cfg['origin']}")
 

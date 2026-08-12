@@ -158,10 +158,19 @@ services:
       # live HERE, in the dispatcher's own environment - never in a /spawn
       # request. That is the whole safety property: the caller cannot name a
       # variable, add one, override one, or read one back.
-      WORKER_ENV_ALLOWLIST: ${WORKER_ENV_ALLOWLIST:-GITHUB_TOKEN,TARGET_REPO,P5_TEST_COMMAND}
+      WORKER_ENV_ALLOWLIST: ${WORKER_ENV_ALLOWLIST:-GITHUB_TOKEN,TARGET_REPO,P5_TEST_COMMAND,P5_MODEL_MAX_TOKENS}
       # The target project's full test suite. Repository knowledge, not ticket
       # knowledge, so it belongs here rather than in an issue body.
       P5_TEST_COMMAND: ${P4_TEST_COMMAND:-pytest -q}
+      # The worker's per-reply generation budget. It has to be injected through
+      # the allowlist above or it never reaches the container at all, and
+      # worker.py silently falls back to its own 4096 default - which is what
+      # happened, repeatedly. gpt-oss is a reasoning model and its thinking is
+      # charged against this same budget: an observed run spent 18,751
+      # characters reasoning and had nothing left to answer with, and another
+      # truncated a test file mid-literal into `SyntaxError: unmatched '}'`.
+      # Both read as model failures and neither was one.
+      P5_MODEL_MAX_TOKENS: ${P5_MODEL_MAX_TOKENS:-16384}
       GITHUB_TOKEN: ${TARGET_REPO_TOKEN:-}
       TARGET_REPO: ${TARGET_REPO:-}
       # The worker's one writable mount. Keep the size BELOW WORKER_MEMORY:

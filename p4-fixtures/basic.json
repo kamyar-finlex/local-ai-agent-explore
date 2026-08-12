@@ -364,6 +364,34 @@
         "#1",
         "#4"
       ]
+    },
+    {
+      "number": 50,
+      "title": "Build the whole product",
+      "state": "open",
+      "labels": ["spec"],
+      "body_lines": [
+        "A specification to plan from, not work to do. No Files touched and no",
+        "acceptance command, by design. Rule 1 skips it, and the defect list must",
+        "stay quiet about it: judging a spec against the ticket contract reports a",
+        "defect every run and trains whoever reads the output to ignore the list."
+      ]
+    },
+    {
+      "number": 51,
+      "title": "Already merged, issue left open",
+      "state": "open",
+      "labels": ["status:done", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Work whose pull request was already merged, on an issue nobody closed.",
+        "",
+        "## Files touched",
+        "- src/already_done.py",
+        "",
+        "## Acceptance criteria",
+        "pytest tests/test_already_done.py -q"
+      ]
     }
   ],
   "comments": {

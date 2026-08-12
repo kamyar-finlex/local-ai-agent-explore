@@ -225,3 +225,113 @@ single agent.
 
 **This is the argument for dedicated inference hardware, in numbers rather than
 assertion.** The bottleneck is inference, not container isolation.
+
+## What it can and cannot do, measured on live tickets
+
+The sections above ask whether a local model can be *served* as an orchestrator.
+This one asks whether it can do the *work*, and the answer splits cleanly in two.
+
+### Every ticket is decided on the first attempt
+
+The worker gives a failing acceptance command up to three tries, feeding the
+command's own output back each time. Across every live run to date:
+
+| Outcome | Tickets | Attempt it was decided on |
+|---|---|---|
+| Passed | #5, #7, #19, #20, #21 | **1 of 3, every time** |
+| Failed | #6 (×2), #21 (×3), #22 (×3) | ran all three, **recovered 0 times** |
+
+That is roughly sixteen retries in which the model was handed its own traceback
+and asked to fix it, with **not one success**. The failures were not subtle. One
+was `SyntaxError: closing parenthesis ')' does not match opening '['` with the
+caret on the character. One was `isinstance() arg 2 must be a type` caused by
+`from datetime import datetime` shadowing `datetime.date`. One was
+`TypeError: unhashable type: 'dict'` from putting dicts in a set.
+
+**`gpt-oss:20b` is a competent one-shot writer and a non-functional debugger.**
+It wrote seven merged pull requests, most of them correct on the first try, and
+it has never once repaired its own output.
+
+The retry budget is therefore close to worthless: `P5_ATTEMPTS=3` buys three
+identical failures and about ninety seconds. What buys correctness is a ticket
+complete enough to be right first time — which is a *planning* investment, not a
+model or hardware one. Lower it to 1 and spend the saved effort on the spec, or
+keep it only for the case the harness proves it handles (a rejection the model
+can recover from, `retry-then-pass` in `verify-worker.sh`) rather than for real
+acceptance failures, where it has a zero success rate.
+
+### What made tickets fail
+
+Six worker failures on #21 and #22, by cause:
+
+| Cause | Count |
+|---|---|
+| The ticket omitted an interface the worker cannot see | 4 |
+| `max_tokens` hardcoded to 4096 because the env var was not on `WORKER_ENV_ALLOWLIST` | 1 |
+| The model could not write a nested comprehension with balanced brackets | 1 |
+
+Only the last is a model-capability failure. A worker is given the target README,
+its own ticket, and the current contents of *its own declared files* — nothing
+else. Every module it imports but does not own is invisible to it, so it guesses
+the interface, and it guesses wrong: that dates needed parsing, that activity
+dicts were hashable, that the costing functions lived beside the itinerary
+builder, that async tests would run. A stronger model guesses better. It is still
+guessing, and the fix is in the ticket format, not the model.
+
+### Skill routing is the weakest link
+
+The orchestrator loaded the correct skill for **1 of 5** natural phrasings. It
+answered from nothing, emitted an invalid call to a tool the toolset restriction
+had disabled, and claimed it had no network access while holding a credential.
+The single reliable phrasing needed both the `#N` form *and* the skill named as
+its own imperative sentence.
+
+The likely cause is menu size rather than intelligence: **77 skills were enabled**
+and two of them were ours, seven more sat in a `github` category that looks
+plausible for "implement issue #19". `install-skills.sh` already argues this case
+for toolsets — *"removing the option is more reliable than instructing against
+it"* — and the same argument was never applied to skills.
+
+### Over-generation
+
+Asked for a function that needed roughly twenty lines, it produced 120, most of
+it numpy-style docstrings. Telling it what *not* to do (`do not parse dates`)
+removed the named behaviour and did not shorten the output. Brevity has to be
+asked for explicitly; it is not inferred from the size of the task.
+
+### Verdict on this model for this PoC
+
+The system works. Planner → issues → human gate → dispatcher → worker container →
+pull request → merge runs end to end, seven pull requests were merged from it, and
+two workers have now been observed running genuinely concurrently (123 seconds of
+overlapping execution on disjoint files, verified from container timestamps rather
+than from an agent's account of itself).
+
+What does not work is finishing autonomously. `gpt-oss:20b` completes a
+well-specified ticket first time and cannot repair a broken one at all, so any
+ticket that is not perfect on attempt one is dead. In practice that made a human
+the debugger: every failure this project hit was diagnosed outside the loop and
+fixed by rewriting the ticket. That is a working development method, but it is not
+the autonomous one the PoC set out to test.
+
+Getting past that needs a model that can act on a traceback, and the hardware
+question is where it bites. The next tier in the same architecture family is
+`gpt-oss:120b`: roughly 63 GB of MXFP4 weights plus ~2.3 GiB of KV cache at a 64K
+window, so about **66 GB resident for a single slot**. A 64 GB Mac Studio has a
+Metal ceiling near 48 GB, and the 36 GB machine this was built on has about 27 GB.
+**The capability tier that could close this gap does not fit on the hardware
+available**, and running an orchestrator and three workers co-resident wants 128 GB.
+
+Two caveats worth keeping attached to that number, so it is not over-read:
+
+- **Simple coding did not need 66 GB.** `app/activities.py`, `app/costing.py` and
+  `app/itinerary.py` were all written by the 20B model and merged, most on the
+  first attempt. What needed the bigger model was *recovering from a mistake*, not
+  writing the code.
+- **Bigger is not the only axis, and may not be the right one.** On the Artificial
+  Analysis intelligence index `gpt-oss-120b` scores 24 against Qwen3.6 27B's 38,
+  and the 27B fits comfortably in 64 GB. 120b is optimised for throughput — 165
+  tok/s against 59 — which suits workers doing volume, not an orchestrator making
+  a handful of judgement calls. Neither figure measures debugging specifically, so
+  both are indicative rather than decisive; the four-prompt routing eval in this
+  repo is the only measurement that speaks to the actual failure.

@@ -100,9 +100,9 @@ else
   note "$(head -3 "$WORK/basic.json.err" 2>/dev/null)"
   printf '\nRESULT: %d passed, %d failed\n\n' "$pass" "$fail"; exit 1
 fi
-[ "$DISPATCH" = "16 2 5 7 17 14" ] \
-  && ok "dispatch order is priority then issue number (16 2 5 7 17 14)" \
-  || bad "dispatch order is '$DISPATCH', expected '16 2 5 7 17 14'"
+[ "$DISPATCH" = "16 2 5 4 7 17 14" ] \
+  && ok "dispatch order is priority then issue number (16 2 5 4 7 17 14)" \
+  || bad "dispatch order is '$DISPATCH', expected '16 2 5 4 7 17 14'"
 case " $DISPATCH " in *" 5 "*) ok "#5, whose blockers #1 and #26 are BOTH closed, is dispatched" ;;
                       *) bad "#5 has only closed blockers but was not dispatched" ;; esac
 case " $DISPATCH " in *" 2 "*) case " $DISPATCH " in *" 7 "*)
@@ -118,9 +118,25 @@ echo "SCHEDULING - WHAT MUST NEVER BE DISPATCHED"
 [ "$(skip_reason "$WORK/basic.json" 27)" = "blocked_by_open" ] \
   && ok "#27 skipped: one blocker closed is not enough, #4 is still open" \
   || bad "#27 dispatched with a partially closed blocker set"
-[ "$(skip_reason "$WORK/basic.json" 4)" = "not_approved" ] \
-  && ok "#4 without status:todo is never dispatched (status:backlog)" \
-  || bad "#4 lacks status:todo but was not skipped as not_approved"
+# The approval gate is GONE: asking for the work is the approval, so a ticket
+# sitting in status:backlog dispatches exactly like one in status:todo. #4 is
+# the backlog ticket that used to be skipped as `not_approved`.
+case " $DISPATCH " in *" 4 "*) ok "#4 is dispatched from status:backlog - no approval label needed" ;;
+                      *) bad "#4 (status:backlog) was skipped; the approval gate is still in force" ;; esac
+[ "$(skip_reason "$WORK/basic.json" 4)" = "NOT-SKIPPED" ] \
+  && ok "...and it appears in no skip list, under any reason" \
+  || bad "#4 was skipped as '$(skip_reason "$WORK/basic.json" 4)'"
+# What rule 1 still refuses, now that approval is not part of it. Both are OPEN,
+# so they reach rule 1 rather than being filtered as closed beforehand.
+[ "$(skip_reason "$WORK/basic.json" 50)" = "spec_issue" ] \
+  && ok "#50 is a spec issue and is never dispatched, approval gate or not" \
+  || bad "#50 (spec) was not skipped as spec_issue (reason: $(skip_reason "$WORK/basic.json" 50))"
+[ "$(skip_reason "$WORK/basic.json" 51)" = "already_done" ] \
+  && ok "#51 carries status:done: merged work is not re-dispatched" \
+  || bad "#51 (status:done) was not skipped as already_done (reason: $(skip_reason "$WORK/basic.json" 51))"
+[ -z "$(defect_kinds "$WORK/basic.json" 50)" ] \
+  && ok "and #50 raises no defect: a spec is not judged against the ticket contract" \
+  || bad "#50 (spec) raised defect(s): $(defect_kinds "$WORK/basic.json" 50)"
 [ "$(skip_reason "$WORK/basic.json" 6)" = "file_conflict" ] \
   && ok "#6 and #2 share src/api.py - never dispatched together ($(skip_detail "$WORK/basic.json" 6))" \
   || bad "two tickets sharing src/api.py were both dispatched"

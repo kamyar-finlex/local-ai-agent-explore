@@ -1,12 +1,12 @@
 # The dispatch loop
 
-The component that decides which approved tickets are ready and starts a worker
+The component that decides which tickets are ready and starts a worker
 container for each, several at once. It implements `ORCHESTRATOR.md` — *Ticket
 format*, *Dispatch rules*, *Worker contract*, *Validation*, *Hard prohibitions* —
 and it contains no model, on purpose.
 
-> `./verify-dispatch.sh` — **63 checks, 0 failures**, against committed fixtures;
-> **70 with `spawn`**, which adds a real worker container created through
+> `./verify-dispatch.sh` — **67 checks, 0 failures**, against committed fixtures;
+> **74 with `spawn`**, which adds a real worker container created through
 > `p1-dispatcher` from an orchestrator that has no Docker socket.
 
 | File | Purpose |
@@ -24,7 +24,7 @@ one file and the damage looks like a merge conflict rather than a scheduling bug
 So readiness here is arithmetic over labels, issue states and declared paths:
 
 ```
-ready(t) ⟺ status:todo ∈ labels(t)
+ready(t) ⟺ open(t) ∧ spec ∉ labels(t) ∧ status:done ∉ labels(t)
          ∧ no un-released claim on t
          ∧ ∀ b ∈ blocked_by(t): state(b) = closed
          ∧ files(t) ∩ files(h) = ∅  for every held ticket h
@@ -56,9 +56,9 @@ silent, and `validate` checks a finished worker's output.
 
 ## Claiming: the lock is a comment, not a label
 
-GitHub has no compare-and-swap on labels. Two dispatch passes can both read
-`status:todo` and both relabel; the second write silently wins and two workers
-edit the same files. Three layers close that, weakest first:
+GitHub has no compare-and-swap on labels. Two dispatch passes can both read a
+ticket as ready and both relabel it; the second write silently wins and two
+workers edit the same files. Three layers close that, weakest first:
 
 1. **One pass per host.** `flock` on `P4_LOCK`. A second pass exits 3 without
    acting. This is what stops the overwhelmingly common case: a cron poll
@@ -78,11 +78,10 @@ a competitor's claim, with a lower id, at the exact moment our claim is written 
 the interleaving a read-then-write check cannot see.
 
 **Order of operations is deliberate: elect → spawn → relabel.** If the spawn
-fails, the dispatcher posts a release marker and stops. The ticket still carries
-`status:todo`, because restoring `status:todo` is something the dispatcher must
-never have to do — `ORCHESTRATOR.md` reserves that label for humans, and code
-that can re-apply it under any circumstance is code that can defeat the review
-gate.
+fails, the dispatcher posts a release marker and stops with the ticket's labels
+exactly as it found them. Relabelling only after a container exists is what keeps
+`status:in-progress` meaning "a worker is running" rather than "a dispatcher
+intended one to".
 
 Consequently the **claim comment is the lock and the label is its mirror**. A
 ticket is treated as held if it has either. That is deliberate redundancy: a
@@ -104,11 +103,14 @@ worker says on the issue:
 - past `P4_WORKER_TIMEOUT_MINUTES` (default 45) with no word, the claim is dead.
 
 Reaping stops and removes the container through the spawn dispatcher, posts a
-release marker explaining what happened, and moves the ticket to
-**`status:backlog`** — *not* `status:todo`. Restarting the work therefore costs a
-human one click. That is the intended trade: an automatic retry loop is exactly
-how a broken ticket burns twenty containers overnight, and a dispatcher that can
-re-approve work has removed the human gate the whole contract is built around.
+release marker explaining what happened, and moves the ticket back to
+**`status:backlog`** so that its state stops claiming a worker is running.
+
+Note what that no longer does. With the approval gate removed, `status:backlog`
+withholds nothing — the ticket is immediately dispatchable again. What still
+prevents a broken ticket burning twenty containers overnight is that **the
+reaper never re-dispatches**: it releases, and the next run happens because a
+human asked for it, not because a loop retried.
 
 Two exceptions keep the reaper from destroying good work:
 
@@ -226,7 +228,7 @@ cycle, a dead worker, a claim race and a case-only filename collision at the sam
 instant.
 
 ```
-RESULT: 63 passed, 0 failed
+RESULT: 67 passed, 0 failed
 ```
 
 Suites: scheduling (positive control first), what must never be dispatched,
@@ -315,9 +317,15 @@ so. Nothing reports "your file lists are too coarse to parallelise".
 **Priority is trusted, not validated.** A planner that marks everything
 `priority:1` gets issue-number order and no complaint.
 
-**Nothing detects a ticket that is ready forever.** A `status:todo` ticket
-skipped 500 times for `file_conflict` is invisible; there is no starvation
-metric. `held_issues` in the plan output is the raw material for one.
+**Nothing detects a ticket that is ready forever.** A ticket skipped 500 times for
+`file_conflict` is invisible; there is no starvation metric. `held_issues` in the
+plan output is the raw material for one.
+
+**And nothing now stands between a prompt and a running worker.** Dropping the
+approval gate made every open ticket dispatchable, which is what it was for — but
+it also means a mistyped issue number, a misrouted skill call or a planner that
+produced nonsense reaches a container without a human having looked at the ticket
+in between. The pull request is the remaining gate, and it is the *last* one.
 
 ## Configuration
 
@@ -341,6 +349,6 @@ Everything is environment, and every machine-specific value belongs in
 python3 p4-dispatch-loop.py plan --source github --limit 3        # read-only
 python3 p4-dispatch-loop.py dispatch --source github --reap --interval 60
 python3 p4-dispatch-loop.py validate --source github --issue 42 --checkout ./target
-./verify-dispatch.sh                                              # 63 checks
+./verify-dispatch.sh                                              # 67 checks
 ./verify-dispatch.sh spawn                                        # + live containers
 ```

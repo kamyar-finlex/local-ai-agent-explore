@@ -2,10 +2,15 @@
 """
 p4-dispatch-loop - the DISPATCHER of the orchestrator contract (ORCHESTRATOR.md).
 
-It polls the target repository for approved issues, decides *deterministically*
-which of them are ready, claims them, starts one worker container per ticket
-through the existing body-validating spawn dispatcher (p1-dispatcher.py), and
-later validates what a worker produced.
+It reads the target repository's open issues, decides *deterministically* which
+of them are ready, claims them, starts one worker container per ticket through
+the existing body-validating spawn dispatcher (p1-dispatcher.py), and later
+validates what a worker produced.
+
+Readiness is no longer about approval. A ticket used to need `status:todo`, set
+by a human in a browser; asking for the work is now the approval, and any open
+implementation ticket can be dispatched. What remains is correctness: blockers
+closed, no two workers on one file, a usable ticket.
 
 There is no model anywhere in this file. "Is this ticket ready" is arithmetic on
 labels, issue states and declared file paths, so the same repository state always
@@ -569,14 +574,25 @@ def build_plan(issues: list, comments_by_issue: dict, limit: int) -> Plan:
             plan.skipped.append({"issue": t.number, "reason": "already_claimed",
                                  "detail": "a worker holds this ticket"})
             continue
-        # Rule 1 - approval
-        if not t.has(LBL_TODO):
-            plan.skipped.append({"issue": t.number, "reason": "not_approved",
-                                 "detail": f"labels={t.labels}"})
+        # Rule 1 - is this a ticket worth starting?
+        #
+        # This used to be the approval gate: dispatch required `status:todo`, set
+        # by a human and by nobody else. That gate is GONE, deliberately. Asking
+        # for the work IS the approval now - a human typing "start #6" has said
+        # everything the label used to say, and making them also flip a label in
+        # a browser was ceremony, not review. Backlog and todo dispatch alike.
+        #
+        # What that costs, stated plainly rather than discovered later: nothing
+        # now stands between a prompt and a worker writing code. The controls
+        # that remain are about correctness, not permission - blockers closed,
+        # no two workers on one file - and the human gate is the prompt itself.
+        if t.has("spec"):
+            plan.skipped.append({"issue": t.number, "reason": "spec_issue",
+                                 "detail": "a specification to plan from, not work to do"})
             continue
         if t.has(LBL_DONE):
-            plan.skipped.append({"issue": t.number, "reason": "label_conflict",
-                                 "detail": "carries status:todo and status:done"})
+            plan.skipped.append({"issue": t.number, "reason": "already_done",
+                                 "detail": "carries status:done; its pull request was merged"})
             continue
         # Rule 4 - a usable ticket (also covers the file list, which rule 3 needs)
         if t.blocking_defects:
@@ -957,17 +973,19 @@ def claim_and_spawn(client, spawner, ticket: Ticket, disp_id: str, repo: str) ->
       4. spawn the worker,
       5. only then relabel to status:in-progress.
 
-    If the spawn fails we post a release marker and leave the labels untouched:
-    the ticket is still status:todo, which no agent is permitted to set, so the
-    dispatcher must never have to restore it.
+    If the spawn fails we post a release marker and leave the labels untouched,
+    so the ticket is exactly as it was and the next pass can pick it up again.
     """
     number = ticket.number
     fresh = [i for i in client.list_issues() if int(i["number"]) == number]
     if not fresh:
         return {"issue": number, "claimed": False, "reason": "issue disappeared"}
     fresh_t = Ticket(fresh[0])
-    if not fresh_t.has(LBL_TODO) or fresh_t.has(LBL_IN_PROGRESS) or fresh_t.state != "open":
-        return {"issue": number, "claimed": False, "reason": "label changed under us"}
+    # Re-read just before claiming, because the plan was computed from a listing
+    # that is already seconds old. Approval is no longer part of this check - only
+    # "is someone already on it" and "is it still open".
+    if fresh_t.has(LBL_IN_PROGRESS) or fresh_t.has(LBL_DONE) or fresh_t.state != "open":
+        return {"issue": number, "claimed": False, "reason": "state changed under us"}
     existing = active_claim(client.list_comments(number))
     if existing:
         return {"issue": number, "claimed": False,
@@ -981,8 +999,8 @@ def claim_and_spawn(client, spawner, ticket: Ticket, disp_id: str, repo: str) ->
             f"- files: {', '.join('`%s`' % f for f in ticket.files)}\n"
             f"- acceptance: `{ticket.acceptance}`\n\n"
             "If this worker goes silent it is released automatically after "
-            f"{WORKER_TIMEOUT_M} minutes and the issue returns to `status:backlog` "
-            "for a human to re-approve.")
+            f"{WORKER_TIMEOUT_M} minutes and the issue returns to `status:backlog`, "
+            "ready to be asked for again.")
     mine = client.create_comment(number, body)
 
     winner = active_claim(client.list_comments(number))
@@ -1000,7 +1018,7 @@ def claim_and_spawn(client, spawner, ticket: Ticket, disp_id: str, repo: str) ->
     except SpawnError as e:
         client.create_comment(number, make_marker(RELEASE_MARK, {"nonce": nonce, "reason": "spawn_failed"})
                               + f"\nWorker could not be started: {redact(str(e))}. "
-                                "The ticket keeps `status:todo` and will be retried on the next pass.")
+                                "The ticket's labels are unchanged and it will be retried on the next pass.")
         return {"issue": number, "claimed": False, "reason": f"spawn failed: {e}"}
 
     client.add_labels(number, [LBL_IN_PROGRESS])
@@ -1050,9 +1068,10 @@ def reap(client, spawner, now: dt.datetime, timeout_minutes: int, pulls: list) -
     verbs and deliberately exposes no inventory, no /logs and no /wait. So the
     signal is time - the claim comment's server timestamp, refreshed by the
     worker's own heartbeat comments - and the action is: stop the container,
-    say so on the issue, and drop the ticket to status:backlog. NOT to
-    status:todo: re-approval is a human act, and a dispatcher that could
-    re-approve work has removed the review gate.
+    say so on the issue, and drop the ticket back to status:backlog so it is
+    plainly not in flight. With the approval gate gone that label no longer
+    withholds anything: the ticket is dispatchable again immediately, and it is
+    the human's next prompt, not a label, that decides whether it runs.
     """
     actions = []
     issues = client.list_issues()
@@ -1086,9 +1105,8 @@ def reap(client, spawner, now: dt.datetime, timeout_minutes: int, pulls: list) -
             make_marker(RELEASE_MARK, {"nonce": claim.nonce, "reason": "timeout"}) + "\n"
             f"Worker `{claim.worker}` produced nothing for {age_min:.0f} minutes "
             f"(timeout {timeout_minutes}m). Its container was stopped and removed and the "
-            "claim released.\n\nThe ticket is now `status:backlog`. A human re-approving it "
-            "(`status:todo`) is what restarts the work — the dispatcher will not re-approve "
-            "its own ticket. Check the branch for partial work before restarting.")
+            "claim released.\n\nThe ticket is back to `status:backlog` and can be dispatched "
+            "again by asking for it. Check the branch for partial work before restarting.")
         client.add_labels(t.number, [LBL_BACKLOG])
         client.remove_label(t.number, LBL_IN_PROGRESS)
         actions.append({"issue": t.number, "action": "released", "worker": claim.worker,
@@ -1203,9 +1221,8 @@ def record_validation(client, result: dict) -> None:
                       "its files remain reserved so no other worker edits them under an unmerged "
                       "branch. A human merges and sets `status:done`."]
     else:
-        lines += ["", "The dispatcher does not repair worker output. The ticket has been moved to "
-                      "`status:backlog`; a human decides whether to re-approve it (`status:todo`) "
-                      "for another attempt."]
+        lines += ["", "The dispatcher does not repair worker output. The ticket has been moved "
+                      "back to `status:backlog`; ask for it again to make another attempt."]
     client.create_comment(number, "\n".join(lines))
     if not result["ok"]:
         comments = client.list_comments(number)
