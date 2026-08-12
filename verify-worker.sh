@@ -94,6 +94,28 @@ for f in "$WORKER" "$REPLIES" "$ISSUES" "$CONTRACT" "$FIX/repo/README.md"; do
   [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }
 done
 command -v git >/dev/null || { echo "git is required" >&2; exit 2; }
+# pytest is a hard prerequisite, not an optional extra: the fixture project's
+# acceptance commands ARE pytest invocations, so skipping them would leave the
+# suite passing without exercising the thing it exists to test.
+#
+# Getting it is awkward through no fault of the user. A Homebrew python3 is PEP
+# 668 "externally managed", so `pip install pytest` is refused, and telling
+# someone to --break-system-packages their interpreter for a test harness is not
+# a reasonable ask. So provision a throwaway venv beside the harness and put it
+# first on PATH. Override with PYTEST_VENV=/path if you would rather point at
+# your own.
+if ! python3 -c 'import pytest' 2>/dev/null; then
+  VENV="${PYTEST_VENV:-$HERE/.venv-verify}"
+  # Gate on pytest, not on the interpreter. A venv left half-provisioned by an
+  # interrupted run has a python3 and no pytest, and checking for the
+  # interpreter would reuse it forever without ever installing anything.
+  if ! "$VENV/bin/python3" -c 'import pytest' 2>/dev/null; then
+    echo "provisioning a local venv for pytest at ${VENV##*/} (one-off)..." >&2
+    [ -x "$VENV/bin/python3" ] || python3 -m venv "$VENV" 2>&1 | tail -2 >&2
+    "$VENV/bin/python3" -m pip install -q --disable-pip-version-check pytest 2>&1 | tail -2 >&2
+  fi
+  [ -x "$VENV/bin/python3" ] && PATH="$VENV/bin:$PATH" && export PATH
+fi
 python3 -c 'import pytest' 2>/dev/null || {
   echo "pytest must be importable: the fixture project's acceptance commands are" >&2
   echo "pytest invocations, and skipping them would make this suite vacuous." >&2

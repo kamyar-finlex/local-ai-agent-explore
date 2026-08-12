@@ -17,3 +17,6 @@ __pycache__/
 
 # Machine-specific values: private ports, LAN addresses, tokens. Never commit.
 local.env*
+
+# Throwaway venv the worker harness provisions when the system python lacks pytest
+.venv-verify/
