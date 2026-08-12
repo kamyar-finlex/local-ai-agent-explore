@@ -152,7 +152,7 @@ services:
       WORKER_LABEL_KEY: role
       WORKER_LABEL_VALUE: hermes-worker
       WORKER_NETWORK: hermes-isolated
-      WORKER_NAME_PREFIX: hermes-worker-
+      WORKER_NAME_PREFIX: ${WORKER_NAME_PREFIX:-hermes-worker-}
       WORKER_MEMORY: ${WORKER_MEMORY:-536870912}
       # Names the dispatcher may inject, and the VALUES it injects. The values
       # live HERE, in the dispatcher's own environment - never in a /spawn
@@ -261,6 +261,10 @@ services:
       # request to the egress proxy and the failure looks like broken DNS.
       P4_SPAWN_URL: ${P4_SPAWN_URL:-http://hermes-dispatcher:2375}
       P4_SPAWN_TOKEN: ${DISPATCH_TOKEN:-}
+      # Same value the spawn dispatcher validates against. Two components built
+      # separately each had a defensible default and they disagreed, so /spawn
+      # refused every name. One variable feeds both.
+      P4_WORKER_NAME_PREFIX: ${WORKER_NAME_PREFIX:-hermes-worker-}
     volumes:
       # The agent's persistent data. Writable by necessity - it is how the agent
       # persists skills and memory. Keep it under git and review the diffs.

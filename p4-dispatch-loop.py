@@ -71,7 +71,11 @@ WORKER_TIMEOUT_M = int(os.environ.get("P4_WORKER_TIMEOUT_MINUTES", "45"))
 # that read like a network fault rather than a wrong hostname.
 SPAWN_URL        = os.environ.get("P4_SPAWN_URL", "http://hermes-dispatcher:2375")
 SPAWN_TOKEN      = os.environ.get("P4_SPAWN_TOKEN", "")
-WORKER_PREFIX    = os.environ.get("P4_WORKER_NAME_PREFIX", "p1-p4w-")
+# Must satisfy the spawn dispatcher's WORKER_NAME_PREFIX or /spawn refuses the
+# name outright. The old default, p1-p4w-, was correct for the standalone rig
+# where the dispatcher's prefix was p1-; under compose it is hermes-worker-.
+# Both sides now read one value from the compose file so they cannot drift.
+WORKER_PREFIX    = os.environ.get("P4_WORKER_NAME_PREFIX", "hermes-worker-")
 WORKER_CMD_TMPL  = os.environ.get(
     "P4_WORKER_CMD",
     '["sh","-c","P4_ISSUE={issue} P4_REPO={repo} exec /usr/local/bin/p4-worker.sh"]',
@@ -499,7 +503,19 @@ def build_plan(issues: list, comments_by_issue: dict, limit: int) -> Plan:
         t = Ticket(raw)
         tickets[t.number] = t
 
+    # Only report defects on OPEN issues. A closed one is either done or
+    # deliberately abandoned, and neither is a planning defect someone should act
+    # on - reporting them buries the live ones in noise. Closed tickets stay in
+    # `tickets` because blocker resolution depends on knowing they are closed.
     for t in tickets.values():
+        if t.state != "open":
+            continue
+        # A spec issue is the INPUT to planning, not a ticket. It has no Files
+        # touched and no acceptance command by design, so judging it against the
+        # ticket contract reports a defect on every single run - which trains
+        # whoever reads this output to ignore the defects list.
+        if t.has("spec"):
+            continue
         for d in t.defects:
             plan.defects.append({"issue": t.number, **d.as_dict()})
 
