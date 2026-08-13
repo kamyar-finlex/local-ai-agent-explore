@@ -361,7 +361,10 @@ each pull request's diff was exactly the files its ticket declared.
 The standard applied is intersecting `docker inspect` timestamps, because the
 same claim was made twice earlier in this project on weaker evidence and was
 false both times — three containers had run eighteen and fifty-seven minutes
-apart, from three separate prompts.
+apart, from three separate prompts. A once-a-second `docker ps` sample taken by a
+process that knows nothing about the dispatcher agrees to within 1.2 s, and the
+harness requires that agreement rather than merely noting it: forging the
+concurrency would take two files edited into consistency, not one number changed.
 
 What was missing before was never scheduling code: it was **three unblocked,
 file-disjoint tickets existing at the same moment**. The width of a parallel run
@@ -374,9 +377,9 @@ the live repository, mid-run — a check arbitrating a real race rather than a
 fixture.
 
 ```bash
-./verify-parallel.sh; echo "exit=$?"    # RESULT: 24 passed, 0 failed / exit=0
-./verify-parallel.sh mutate             # + disable path_conflict, require RED
+./verify-parallel.sh; echo "exit=$?"    # RESULT: 25 passed, 0 failed / exit=0
 ./verify-parallel.sh live               # + re-query the pull requests from GitHub
+./verify-parallel.sh mutate             # + 22 mutations, each requiring the RIGHT check to go red
 ```
 
 > ### → **[PARALLEL-RUN.md](PARALLEL-RUN.md)** — the timestamps, the second
@@ -433,7 +436,7 @@ fixture.
 | `verify-dispatch.sh` | Dispatch verification: 67 checks against fixtures, plus a live `spawn` mode |
 | `p4-fixtures/*.json` | The repository states the scheduler is tested against |
 | `PARALLEL-RUN.md` | The three-worker parallel run: evidence, method, and what it does not prove |
-| `verify-parallel.sh` | Parallel-run verification: 24 checks, `live` re-query, `mutate` control |
+| `verify-parallel.sh` | Parallel-run verification: 25 checks, `live` re-query, and a 22-case mutation battery |
 | `p6-fixtures/` | Two near-identical fixtures differing by one declared path |
 | `p6-evidence/` | Raw capture from the run: timestamps, `docker ps` sample, diffs, logs |
 

@@ -5,7 +5,8 @@
 #
 #   ./verify-parallel.sh            # replay the captured run + the live fixtures
 #   ./verify-parallel.sh live       # + re-query the three pull requests on GitHub
-#   ./verify-parallel.sh mutate     # + break path_conflict and require this to go RED
+#   ./verify-parallel.sh mutate     # + a 22-case battery that breaks each claim in
+#                                   #   turn and requires the RIGHT check to go red
 #
 # Two halves, and the difference between them is the point.
 #
@@ -31,9 +32,11 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Both overridable so the mutation battery in suite E can point a full run at a
+# doctored copy without ever touching the committed originals.
 SCRIPT="${P6_SCRIPT:-$HERE/p4-dispatch-loop.py}"
 FIX="$HERE/p6-fixtures"
-EV="$HERE/p6-evidence"
+EV="${P6_EVIDENCE:-$HERE/p6-evidence}"
 NOW="2026-01-01T12:00:00Z"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/p6-verify.XXXXXX")"
 MODE="${1:-replay}"
@@ -133,6 +136,48 @@ elif check == "poll":
     print("OK: %d consecutive samples" % best if best else
           "the sample never shows three workers at once")
 
+elif check == "agree":
+    # The two witnesses must not merely both look good - they must describe the
+    # SAME event. Without this, forging concurrency needs one file edited;
+    # with it, two files have to be edited into agreement.
+    #
+    # It is the direction the sequential-run check cannot see: widening the
+    # container windows manufactures overlap that the once-a-second sample
+    # never saw, and the overlap check happily reports a bigger number.
+    cs, poll_path, slack = containers(), paths[1], float(paths[2])
+    lo = max(parse_ts(c["started_at"]) for c in cs)
+    hi = min(parse_ts(c["finished_at"]) for c in cs)
+    stamps = []
+    with open(poll_path) as fh:
+        for line in fh:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) > 1 and parts[1] == "3":
+                stamps.append(parts[0].split(".")[0])
+    if not stamps:
+        print("the docker ps sample never saw three at once, so the two cannot be compared")
+    else:
+        day = lo.date()
+        def at(hms):
+            h, m, s = (int(x) for x in hms.split(":"))
+            return datetime.datetime.combine(day, datetime.time(h, m, s), tzinfo=lo.tzinfo)
+        first, last = at(stamps[0]), at(stamps[-1])
+        poll_span = (last - first).total_seconds()
+        window = (hi - lo).total_seconds()
+        problems = []
+        if abs(window - poll_span) > slack:
+            problems.append("the windows differ by %.1fs: inspect says %.1fs of overlap, "
+                            "the sample saw three for %.1fs"
+                            % (abs(window - poll_span), window, poll_span))
+        if (first - lo).total_seconds() < -slack:
+            problems.append("the sample saw three %.1fs BEFORE the third container started"
+                            % -(first - lo).total_seconds())
+        if (hi - last).total_seconds() < -slack:
+            problems.append("the sample saw three %.1fs AFTER the first container exited"
+                            % -(hi - last).total_seconds())
+        print("OK: within %.1fs (inspect %.1fs, sample %.1fs), tolerance %.0fs"
+              % (abs(window - poll_span), window, poll_span, slack)
+              if not problems else "; ".join(problems))
+
 elif check == "isolation":
     # (label, predicate) - every worker must satisfy every one of these.
     rules = [
@@ -173,6 +218,9 @@ elif check == "rules":
         ("role=hermes-worker, which is what scopes the dispatcher's stop/remove", None),
         ("on the isolated network only - egress is the proxy or nothing", None),
     ]))
+
+elif check == "repo":
+    print(load(paths[0])["repo"])
 
 elif check == "pr_count":
     pulls = load(paths[0])["pulls"]
@@ -240,6 +288,9 @@ verdict     "three distinct worker containers were recorded" "$(ev count "$ISO")
 verdict_msg "their [start, finish] intervals intersect" "$(ev overlap "$ISO")"
 verdict     "all three exited 0 and none was OOM-killed - three workers WORKING, not three crashing together" "$(ev exits "$ISO")"
 verdict_msg "an independent once-a-second docker ps sample saw all three at once" "$(ev poll "$POLL")"
+# 3s: one sample period, plus the latency of the `docker ps` the sampler shells
+# out to. Measured agreement on the captured run is 1.2s.
+verdict_msg "and the two witnesses describe the same event" "$(ev agree "$ISO" "$POLL" 3)"
 
 ################################################################################
 echo
@@ -251,9 +302,13 @@ if [ "$MODE" = "live" ]; then
     bad "live mode needs a real TARGET_REPO_TOKEN; source local.env first"
   else
     cat > "$WORK/requery.py" <<'PYEOF'
-import json, os, subprocess, sys
-repo = os.environ["TARGET_REPO"]
+import json, subprocess, sys
+# The repository comes from the EVIDENCE, never from $TARGET_REPO. local.env
+# points at whatever the operator is working on today - it was repointed at a
+# different project within the hour, and re-querying that one would have proved
+# nothing about this run while still printing PASS.
 base = json.load(open(sys.argv[1]))
+repo = base["repo"]
 def gh(path):
     return json.loads(subprocess.check_output(["gh", "api", path]))
 for entry in base["pulls"]:
@@ -268,7 +323,7 @@ print(json.dumps(base, indent=2))
 PYEOF
     if GH_TOKEN="$TARGET_REPO_TOKEN" python3 "$WORK/requery.py" "$PR" > "$WORK/live-pr.json" 2>"$WORK/requery.err"; then
       PR="$WORK/live-pr.json"
-      ok "re-queried all three pull requests from GitHub instead of replaying the capture"
+      ok "re-queried all three pull requests from $(ev repo "$PR") instead of replaying the capture"
     else
       bad "could not re-query the pull requests: $(head -1 "$WORK/requery.err")"
     fi
@@ -284,15 +339,21 @@ verdict     "no file appears in two pull requests - the collision the design exi
 # Path-level disjointness is necessary and not sufficient: two branches can touch
 # different files and still be incompatible. The merge is the check that sees
 # that, which is why this suite does not stop at set arithmetic.
+# Both of these state the PROPERTY, on the pass path and the fail path alike, so
+# that a failure is greppable by the same string that describes what is claimed.
+# Three checks here used to word their failures differently and the mutation
+# battery caught it - the assertions were passing for a reason nobody had read.
 if grep -q "no conflict" "$MERGE" 2>/dev/null && ! grep -qiE "conflict in|merge failed" "$MERGE" 2>/dev/null; then
   ok "the three branches merge into one tree with no conflict"
 else
-  bad "the recorded three-way merge did not come out clean ($MERGE)"
+  bad "the three branches merge into one tree with no conflict"
+  note "the recorded merge did not come out clean ($MERGE)"
 fi
 if grep -qE "^16 passed" "$MERGE" 2>/dev/null && grep -qE "^34 passed" "$MERGE" 2>/dev/null; then
   ok "and the suite on the merged tree passes, 16 -> 34 tests"
 else
-  bad "the suite on the merged tree is not recorded as passing ($MERGE)"
+  bad "and the suite on the merged tree passes, 16 -> 34 tests"
+  note "not recorded as passing at 16 -> 34 ($MERGE)"
 fi
 
 ################################################################################
@@ -361,31 +422,193 @@ fi
 L29="$(ev plan_skip "$LIVEPLAN" 29)"
 L_HELD="$(ev plan_held "$LIVEPLAN")"
 if [ "${L29%%|*}" = "file_conflict" ] && [ "$L_HELD" = "[26, 27, 28]" ]; then
-  ok "on the LIVE repository, mid-run with $L_HELD held, #29 was refused: ${L29#*|}"
+  ok "on the LIVE repository, mid-run with three held, #29 was refused file_conflict: ${L29#*|}"
 else
-  bad "the captured live pass does not show the refusal (reason '${L29%%|*}', held '$L_HELD')"
+  bad "on the LIVE repository, mid-run with three held, #29 was refused file_conflict"
+  note "the captured pass shows reason '${L29%%|*}' with held_issues '$L_HELD'"
 fi
 
 ################################################################################
 if [ "$MODE" = "mutate" ]; then
 echo
-echo "E. MUTATION CONTROL - break the check and require this harness to notice"
+echo "E. MUTATION BATTERY - break each claim in turn and require the RIGHT check to notice"
+echo "   'no failures found' and 'the detector is broken' produce identical output, so"
+echo "   every assertion above is worth exactly as much as this suite."
 ################################################################################
-  MUT="$WORK/mutant.py"
-  sed 's|^    a, b = a.casefold(), b.casefold()$|    return False  # MUTATION: path_conflict disabled|' \
-    "$HERE/p4-dispatch-loop.py" > "$MUT"
-  if ! diff -q "$MUT" "$HERE/p4-dispatch-loop.py" >/dev/null 2>&1; then
-    ok "path_conflict disabled in a throwaway copy (the committed file is untouched)"
-  else
-    bad "the mutation did not apply - path_conflict's body has changed shape; update the sed"
+
+# Each case doctors a throwaway copy of the evidence (or of the dispatch loop),
+# runs a FULL replay pass against it, and requires a specific named check to go
+# red. Requiring the SPECIFIC check matters: a mutation that turns the whole
+# suite red proves the harness is brittle, not that it is discriminating.
+MUT_N=0
+mutation() {  # LABEL  EXPECTED-FAIL-SUBSTRING  MUTATOR-COMMAND...
+  local label="$1" expect="$2"; shift 2
+  MUT_N=$((MUT_N+1))
+  local dir="$WORK/mut-$MUT_N"
+  mkdir -p "$dir/ev"
+  # Always copied from the COMMITTED evidence, never from $EV: each case must
+  # start pristine, or a mutation would compound on the previous one and the
+  # "caught by" attribution would be meaningless.
+  cp -R "$HERE/p6-evidence/." "$dir/ev/" 2>/dev/null
+  cp "$HERE/p4-dispatch-loop.py" "$dir/loop.py"
+  EVC="$dir/ev" SCRIPTC="$dir/loop.py" "$@" 2>"$dir/mutator.err"
+  if [ $? -ne 0 ]; then
+    bad "$label - the MUTATOR itself failed; the case proves nothing"
+    note "$(head -2 "$dir/mutator.err")"
+    return
   fi
-  P6_SCRIPT="$MUT" "$0" replay > "$WORK/mutant.out" 2>&1
-  if grep -q "FAIL" "$WORK/mutant.out"; then
-    ok "the mutant run goes RED - suite D is capable of catching a collision"
-    note "$(grep -c FAIL "$WORK/mutant.out") failing checks; first: $(grep -m1 FAIL "$WORK/mutant.out" | sed 's/^ *[^ ]*FAIL[^ ]* *//')"
+  P6_EVIDENCE="$dir/ev" P6_SCRIPT="$dir/loop.py" "$0" replay > "$dir/out" 2>&1
+  local nfail; nfail=$(grep -c FAIL "$dir/out")
+  if grep -F "FAIL" "$dir/out" | grep -qF "$expect"; then
+    ok "$label -> caught by '$expect' ($nfail check(s) red)"
+  elif [ "$nfail" -gt 0 ]; then
+    bad "$label - the suite went red, but on the WRONG check; expected '$expect'"
+    note "$(grep -m2 FAIL "$dir/out" | sed 's/^ *[^ ]*FAIL[^ ]* *//' | tr '\n' ';')"
   else
-    bad "the mutant run still passed - suite D would NOT catch a real collision"
+    bad "$label - the suite STILL PASSED. This claim is not actually being checked."
   fi
+}
+
+# A python helper for the JSON edits, so the mutations are readable rather than
+# a wall of sed.
+cat > "$WORK/mutate.py" <<'PYEOF'
+import json, sys
+path, op = sys.argv[1], sys.argv[2]
+with open(path) as fh:
+    d = json.load(fh)
+
+
+def worker(name):
+    return next(c for c in d if c["name"] == name)
+
+
+def pull(n):
+    return next(p for p in d["pulls"] if p["pull"] == n)
+
+
+if op == "sequential":
+    # Push the last worker's start an hour past everyone's finish.
+    worker("hermes-worker-28")["started_at"] = "2026-08-13T09:50:57.382096763Z"
+elif op == "widen":
+    # Forge overlap: claim every container spanned the whole run. The overlap
+    # check is happy - it gets a BIGGER number - and only the sample disagrees.
+    lo = min(c["started_at"] for c in d)
+    hi = max(c["finished_at"] for c in d)
+    for c in d:
+        c["started_at"], c["finished_at"] = lo, hi
+elif op == "drop_worker":
+    d = [c for c in d if c["name"] != "hermes-worker-28"]
+elif op == "bind_mount":
+    worker("hermes-worker-27")["binds"] = ["/Users/someone/src:/work:rw"]
+elif op == "no_mem_cap":
+    worker("hermes-worker-26")["memory"] = 0
+elif op == "writable_rootfs":
+    worker("hermes-worker-26")["readonly_rootfs"] = False
+elif op == "host_pid":
+    worker("hermes-worker-28")["pid_mode"] = "host"
+elif op == "failed_worker":
+    worker("hermes-worker-27")["exit_code"] = 6
+elif op == "wrong_network":
+    worker("hermes-worker-26")["networks"] = ["bridge", "hermes-isolated"]
+elif op == "no_role_label":
+    worker("hermes-worker-28")["labels"].pop("role", None)
+elif op == "no_work_tmpfs":
+    worker("hermes-worker-26")["tmpfs"].pop("/work", None)
+elif op == "undeclared_file":
+    pull(30)["changed_files"].append("README.md")
+elif op == "shared_file":
+    # Declared AND changed on both, so the scope check stays green and only the
+    # pairwise-disjointness check can catch it.
+    pull(30)["declared_files"].append("app/interests.py")
+    pull(30)["changed_files"].append("app/interests.py")
+elif op == "shared_branch":
+    pull(30)["head"] = pull(31)["head"]
+elif op == "split_base":
+    pull(30)["merge_base_sha"] = "0000000000000000000000000000000000000000"
+elif op == "slot_cap_refusal":
+    for s in d["skipped"]:
+        if s["issue"] == 29:
+            s["reason"], s["detail"] = "no_slots", "concurrency limit 3 reached"
+elif op == "nothing_held":
+    d["concurrency"]["held_issues"] = []
+else:
+    sys.exit("unknown op %r" % op)
+
+with open(path, "w") as fh:
+    json.dump(d, fh, indent=2)
+PYEOF
+
+mut_json() { python3 "$WORK/mutate.py" "$1" "$2"; }
+
+# --- the battery's own positive control ---------------------------------------
+# An unmutated copy must pass cleanly. Without this, every "the suite went red"
+# below could just mean the copy is broken.
+mkdir -p "$WORK/mut-0/ev"; cp -R "$HERE/p6-evidence/." "$WORK/mut-0/ev/"
+if P6_EVIDENCE="$WORK/mut-0/ev" "$0" replay > "$WORK/mut-0/out" 2>&1; then
+  ok "POSITIVE CONTROL: an unmutated copy of the evidence still passes clean"
+else
+  bad "POSITIVE CONTROL FAILED: the unmutated copy does not pass; the battery below is void"
+  note "$(grep -m2 FAIL "$WORK/mut-0/out")"
+fi
+
+echo
+echo "   -- the concurrency claim, in both directions --"
+mutation "a worker actually ran an hour later (sequential)" "intervals intersect" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" sequential' "$WORK/mutate.py"
+mutation "container windows widened to FORGE overlap that never happened" "witnesses describe the same event" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" widen' "$WORK/mutate.py"
+mutation "the docker ps sample only ever saw two" "docker ps sample" \
+  sh -c 'sed -i.bak "s/	3	/	2	/" "$EVC/02-docker-ps-poll.tsv"'
+mutation "one of the three containers is missing from the record" "three distinct worker containers" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" drop_worker' "$WORK/mutate.py"
+mutation "a worker exited non-zero" "exited 0" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" failed_worker' "$WORK/mutate.py"
+
+echo
+echo "   -- the no-collision claim --"
+mutation "a diff contains a file its ticket never declared" "changed file is one its ticket declared" \
+  sh -c 'python3 "$0" "$EVC/06-pull-requests.json" undeclared_file' "$WORK/mutate.py"
+mutation "two pull requests changed the same file" "no file appears in two pull requests" \
+  sh -c 'python3 "$0" "$EVC/06-pull-requests.json" shared_file' "$WORK/mutate.py"
+mutation "two workers pushed to one branch" "three distinct branches" \
+  sh -c 'python3 "$0" "$EVC/06-pull-requests.json" shared_branch' "$WORK/mutate.py"
+mutation "the branches did not come from one commit" "branch from one commit" \
+  sh -c 'python3 "$0" "$EVC/06-pull-requests.json" split_base' "$WORK/mutate.py"
+mutation "the three-way merge actually conflicted" "merge into one tree with no conflict" \
+  sh -c 'printf "merge conflict in app/interests.py\n" > "$EVC/07-three-way-merge.txt"'
+
+echo
+echo "   -- the isolation claims --"
+mutation "a worker had a host bind mount" "no bind mounts" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" bind_mount' "$WORK/mutate.py"
+mutation "a worker had no memory cap (compose key unset inspects as 0)" "NON-ZERO memory" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" no_mem_cap' "$WORK/mutate.py"
+mutation "a worker had a writable rootfs" "read-only rootfs" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" writable_rootfs' "$WORK/mutate.py"
+mutation "a worker shared the host PID namespace" "private IPC and PID" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" host_pid' "$WORK/mutate.py"
+mutation "a worker had no private /work tmpfs" "own /work tmpfs" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" no_work_tmpfs' "$WORK/mutate.py"
+mutation "a worker was on a second network" "isolated network only" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" wrong_network' "$WORK/mutate.py"
+mutation "a worker was missing the role label that scopes stop/remove" "role=hermes-worker" \
+  sh -c 'python3 "$0" "$EVC/08-container-isolation.json" no_role_label' "$WORK/mutate.py"
+
+echo
+echo "   -- the collision-refusal claim --"
+mutation "the live refusal was really the slot cap, not the file rule" "refused file_conflict" \
+  sh -c 'python3 "$0" "$EVC/04-plan-during-run.json" slot_cap_refusal' "$WORK/mutate.py"
+mutation "nothing was actually in flight when the refusal was recorded" "refused file_conflict" \
+  sh -c 'python3 "$0" "$EVC/04-plan-during-run.json" nothing_held' "$WORK/mutate.py"
+mutation "path_conflict disabled in the dispatch loop itself" "collision fixture dispatched" \
+  sh -c 'sed -i.bak "s|^    a, b = a.casefold(), b.casefold()\$|    return False  # MUTATION|" "$SCRIPTC"'
+
+echo
+echo "   -- the harness's own failure modes --"
+mutation "the evidence is gone entirely" "POSITIVE CONTROL FAILED" \
+  sh -c 'rm -f "$EVC"/*'
+mutation "an evidence file is corrupt (must FAIL, never crash into a pass)" "three distinct worker containers" \
+  sh -c 'printf "{ not json" > "$EVC/08-container-isolation.json"'
 fi
 
 ################################################################################

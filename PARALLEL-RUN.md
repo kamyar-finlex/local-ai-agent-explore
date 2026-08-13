@@ -5,10 +5,10 @@ agents running concurrently, and no cross-agent collisions across a full paralle
 run. Both are now met. This file is the evidence and the method, and it is
 deliberate that the evidence comes first.
 
-> `./verify-parallel.sh` — **24 checks, 0 failures**; **26 with `mutate`**, which
-> disables `path_conflict` in a throwaway copy and requires the suite to go red;
-> `live` re-queries the three pull requests from GitHub instead of replaying the
-> capture.
+> `./verify-parallel.sh` — **25 checks, 0 failures**; **26 with `live`**, which
+> re-queries the three pull requests from GitHub instead of replaying the
+> capture; **48 with `mutate`**, a 22-case battery that breaks each claim in turn
+> and requires the *right* check to go red.
 
 ## Why this needed its own ticket
 
@@ -59,8 +59,18 @@ those timestamps rather than asserted here.
 
 A second, independent witness: a `docker ps` sample taken once a second by a
 process that knows nothing about the dispatcher recorded **74 consecutive samples
-listing all three names**. If that and the container timestamps ever disagree,
-believe neither.
+listing all three names**, spanning 79.0 s against the 80.2 s the container
+timestamps claim — **agreement to 1.2 s**.
+
+That agreement is asserted, not just observed, and it is the check that matters
+most. The sequential-run check only looks in one direction: it catches a run that
+did not overlap. It cannot catch a run whose windows were *widened* to
+manufacture overlap that never happened, because a bigger intersection is exactly
+what it is looking for. Requiring the two witnesses to describe the same event —
+same duration to within one sample period, the sampled span contained in the
+inspected window — means forging this needs two files edited into agreement
+rather than one number changed. Tolerance is 3 s: one sample period plus the
+latency of the `docker ps` the sampler shells out to.
 
 ```
 08:50:57  1  hermes-worker-26
@@ -191,17 +201,46 @@ The refusal is also re-checked at `--limit 99`, because a concurrency cap would
 have stopped the third ticket too, and that is a different property being
 confused for this one.
 
-**And the harness is checked by breaking the code.** `./verify-parallel.sh mutate`
-copies `p4-dispatch-loop.py`, replaces the body of `path_conflict` with
-`return False`, and re-runs the suite against the mutant:
+## The harness is checked by breaking every claim in it
 
-```
-PASS  path_conflict disabled in a throwaway copy (the committed file is untouched)
-PASS  the mutant run goes RED - suite D is capable of catching a collision
-      3 failing checks; first: the collision fixture dispatched '60 61 62', expected '60 61'
-```
+"No failures found" and "the detector is broken" produce identical output, so
+every assertion above is worth exactly as much as this suite.
+`./verify-parallel.sh mutate` runs **22 cases**. Each doctors a throwaway copy of
+the evidence — or of `p4-dispatch-loop.py` — runs a *full* replay pass against
+the copy, and requires a **named** check to go red. Requiring the specific check
+matters: a mutation that turns the whole suite red proves the harness is brittle,
+not that it discriminates.
 
-Without that, "no collision was detected" is also what a broken detector reports.
+| The lie | Caught by |
+|---|---|
+| a worker actually ran an hour later | `intervals intersect` |
+| container windows widened to **forge** overlap | `witnesses describe the same event` |
+| the `docker ps` sample only ever saw two | `docker ps sample` |
+| one container missing from the record | `three distinct worker containers` |
+| a worker exited non-zero | `exited 0` |
+| a diff contains an undeclared file | `changed file is one its ticket declared` |
+| two pull requests changed one file | `no file appears in two pull requests` |
+| two workers pushed to one branch | `three distinct branches` |
+| the branches came from different commits | `branch from one commit` |
+| the three-way merge actually conflicted | `merge into one tree with no conflict` |
+| bind mount / writable rootfs / host PID / no memory cap / no `/work` tmpfs / second network / missing `role` label | the seven isolation rules, one each |
+| the live refusal was really the slot cap | `refused file_conflict` |
+| nothing was in flight when it was recorded | `refused file_conflict` |
+| `path_conflict` disabled in the dispatch loop | `collision fixture dispatched` |
+| the evidence is gone entirely | the positive control |
+| an evidence file is corrupt JSON | must FAIL, never crash into a pass |
+
+The battery opens with its own positive control — an *unmutated* copy must pass
+clean — because otherwise every "it went red" below could just mean the copy is
+broken. **48 passed, 0 failed.**
+
+Two real defects came out of writing it, which is the argument for writing it.
+Three checks worded their failure differently from their claim, so they were
+green for a reason nobody had read; every check now names the property
+identically on both paths. And `live` mode re-queried `$TARGET_REPO` rather than
+the repository the evidence records — `local.env` was repointed at a different
+project within the hour, and the check would have gone on printing PASS while
+verifying nothing. It reads the repo from the evidence now, and prints which one.
 
 ## What this does not prove
 
