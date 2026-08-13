@@ -4,8 +4,8 @@ p1-dispatcher - option (d): a thin, body-validating dispatcher that OWNS the
 Docker socket and exposes a narrow, authenticated, verb-based interface.
 
 The orchestrator never sees the Docker socket or the raw Engine API. It can only
-POST three verbs - /spawn, /stop, /remove - each carrying a tiny, allowlisted
-body (a worker name and an optional command). The dispatcher CONSTRUCTS every
+POST four verbs - /spawn, /stop, /remove, /status - each carrying a tiny,
+allowlisted body (a worker name and an optional command). The dispatcher CONSTRUCTS every
 `/containers/create` body itself from a fixed, hardened template, so a caller can
 never smuggle HostConfig.Binds, Privileged, NetworkMode:host or PidMode:host: the
 attack surface those fields live on is simply not exposed. Destructive verbs are
@@ -348,7 +348,86 @@ def remove(req):
     return 200, {"removed": name}
 
 
-ROUTES = {"/spawn": spawn, "/stop": stop, "/remove": remove}
+# The exact set of keys /status may ever answer with. Declared as a constant
+# rather than left implicit in the return statement so that the harness can
+# assert on it, and so that widening the response is a visible edit to a named
+# list rather than an extra field somebody added to a dict in passing.
+STATUS_FIELDS = ("name", "exists", "running", "exit_code")
+
+
+def status(req):
+    """Answer ONE question about ONE named worker: is it still running?
+
+    This is the smallest fact `reap` needs, and it is added because the
+    alternative was worse. Without it the dispatch loop infers liveness from a
+    clock - a claim released only after P4_WORKER_TIMEOUT_MINUTES of silence -
+    so a worker that failed in thirty seconds held its ticket for the next
+    forty-five minutes. In practice that meant running `reap --timeout 0` by
+    hand, which releases *every* claim past zero minutes including a live
+    worker's, and therefore cannot be used while anything else is running.
+
+    What this deliberately is NOT, because the narrowness of this interface is
+    the entire security argument in SPAWNING-DECISION.md:
+
+      * Not an inventory. It takes exactly one name. There is no list form, no
+        wildcard, no filter, no "all". A caller cannot discover what exists.
+      * Not an inspect. The response is built field by field from
+        STATUS_FIELDS - never a subset of Docker's body, because a subset is one
+        careless edit away from a superset. `Env` in particular is where an
+        injected GITHUB_TOKEN lives, and an off-the-shelf socket proxy's
+        `GET /containers/{id}/json` hands it straight back. That is one of the
+        nine checks that proxy failed.
+      * Not unscoped. Same label guard as /stop and /remove: a name that is not
+        one of our workers is refused 403 without answering anything about it.
+
+    The one thing it does reveal that nothing else did: whether a given name
+    exists. That oracle was already present - /stop and /remove answer 404 for a
+    missing container and 403 for someone else's - so this adds no new
+    information, only a cheaper way to ask. Said out loud rather than left for a
+    reader to reason about.
+
+    A missing container is a 200 with exists=false rather than a 404, because to
+    `reap` "gone" is an ANSWER, not an error: a worker whose container no longer
+    exists is exactly as dead as one that exited, and making the caller
+    distinguish an expected 404 from a transport failure is how a reaper ends up
+    treating a network blip as a dead worker.
+    """
+    name = req.get("name")
+    if not isinstance(name, str) or not SAFE_NAME_RE.match(name):
+        # Catches the empty body, a list, a glob, and anything with a slash in
+        # it. There is no spelling of "tell me about everything" that gets past
+        # this, which is the property the harness asserts rather than assumes.
+        raise DockerError(400, {"error": "status takes exactly one container name",
+                                "detail": "name must be a single container name; "
+                                          "there is no list, wildcard or filter form"})
+    try:
+        info = assert_worker(name)
+    except DockerError as e:
+        if e.status == 404:
+            return 200, {"name": name, "exists": False, "running": False, "exit_code": None}
+        raise
+
+    state = info.get("State") or {}
+    running = bool(state.get("Running"))
+    # Only meaningful once it has stopped; a running container reports 0 here and
+    # that zero reads exactly like a clean exit to anything that does not also
+    # check `running`.
+    body = {
+        "name": name,
+        "exists": True,
+        "running": running,
+        "exit_code": None if running else state.get("ExitCode"),
+    }
+    # Not an assert: `python -O` strips those, and a guard on a credential
+    # boundary that disappears under an optimisation flag is not a guard. If the
+    # response ever drifts from the declared list, fail the request rather than
+    # answer with a field nobody reviewed.
+    if set(body) != set(STATUS_FIELDS):
+        raise DockerError(500, {"error": "status response drifted from STATUS_FIELDS"})
+    return 200, body
+
+
+ROUTES = {"/spawn": spawn, "/stop": stop, "/remove": remove, "/status": status}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -367,6 +446,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         # Read-only liveness only. No inventory, no inspect, no passthrough.
+        #
+        # /status is a read, and it still lives on do_POST. Deliberate: the
+        # bearer check below is the single authentication chokepoint, and adding
+        # an authenticated GET route means writing that check a second time.
+        # A read verb reachable without a token would be exactly the inventory
+        # surface this interface exists to withhold, and it would be one
+        # forgotten line away.
         if self.path == "/healthz":
             return self._send(200, {"ok": True})
         return self._send(404, {"error": "not found"})

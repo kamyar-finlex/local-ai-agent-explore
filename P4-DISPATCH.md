@@ -5,8 +5,8 @@ container for each, several at once. It implements `ORCHESTRATOR.md` — *Ticket
 format*, *Dispatch rules*, *Worker contract*, *Validation*, *Hard prohibitions* —
 and it contains no model, on purpose.
 
-> `./verify-dispatch.sh` — **67 checks, 0 failures**, against committed fixtures;
-> **74 with `spawn`**, which adds a real worker container created through
+> `./verify-dispatch.sh` — **85 checks, 0 failures**, against committed fixtures;
+> **92 with `spawn`**, which adds a real worker container created through
 > `p1-dispatcher` from an orchestrator that has no Docker socket.
 >
 > One pass of this loop has since produced **three workers alive at the same
@@ -56,8 +56,9 @@ poll ──► parse every issue body ──► build plan ──► claim ─�
         instead of silence         visible        can win a ticket
 ```
 
-Then, optionally in the same pass, `reap` releases claims whose worker went
-silent, and `validate` checks a finished worker's output.
+`reap` runs FIRST in that pass, before the plan is built, releasing the claims of
+workers that have stopped — otherwise a dead worker's claim makes this very pass
+skip its ticket. `validate` checks a finished worker's output, separately.
 
 ## Claiming: the lock is a comment, not a label
 
@@ -95,21 +96,93 @@ milliseconds before a crash still blocks a second dispatch.
 
 ## Stale claims: a dead worker must not hold a ticket forever
 
-The spawn interface is three verbs (`/spawn`, `/stop`, `/remove`) and exposes no
-inventory, no `/logs` and no `/wait` — that narrowness is the whole security
-argument in `SPAWNING-DECISION.md`, and the price is that **the dispatcher cannot
-ask whether a worker is still alive.** So liveness is inferred from what the
-worker says on the issue:
+**The dispatcher asks the container.** For most of this project's life it could
+not: the spawn interface was three verbs and exposed no inventory, no `/logs`
+and no `/wait`, so liveness had to be inferred from silence. A worker that failed
+in thirty seconds held its ticket for the next forty-five minutes, and the
+workaround — `reap --timeout 0` — releases *every* claim past zero minutes,
+including a live worker's, so it cannot be run while anything else is working.
+One session needed it six times.
 
-- the claim comment's **server** timestamp starts the clock (never the local
-  clock — a skewed dispatcher host would otherwise reap live workers),
-- every worker heartbeat comment (`<!-- p4-heartbeat -->`, at least every 15
-  minutes per `p4-worker-instructions.md`) resets it,
-- past `P4_WORKER_TIMEOUT_MINUTES` (default 45) with no word, the claim is dead.
+The fix was to add exactly the one fact the reaper needs and nothing more:
+[`/status`](SPAWNING-DECISION.md), which takes **one** container name and answers
+running / exited / gone. Not a list, not an inspect, not an inventory. The five
+cases, and the order is the design:
+
+| | Signal | What happens |
+|---|---|---|
+| 1 | an **open PR** references the issue | never reaped, whatever the container says |
+| 2 | container **exited** | released immediately, reason `worker_exited`, exit code recorded |
+| 3 | container **gone**, claim older than `P4_SPAWN_GRACE_MINUTES` | released, reason `container_gone` |
+| 4 | container **gone**, claim younger than that | left alone |
+| 5 | **running**, or liveness **unknown** | the old clock, unchanged |
+
+**The open-PR test is first, and that is not an optimisation.** A worker that
+exits 0 has finished and its container stops within seconds — but its files must
+stay reserved until a human *merges*, or a second worker starts editing files an
+unmerged branch still changes and the conflict lands on the human at merge time.
+Move that test below the status test and every successful ticket is released the
+moment it finishes.
+
+**The grace period exists because the claim is written before the container.**
+The order is elect → spawn → relabel, so for a second or two a perfectly healthy
+claim has nothing to inspect. Without the grace period a reaper racing a
+dispatcher takes the ticket away from a worker that is still being born. An
+*exited* container needs no grace: that answer is unambiguous.
+
+**Unknown never means dead.** A dispatcher too old to have the verb, or a network
+blip, returns unknown, and the reaper falls back to the clock. The one thing a
+component deciding whether to take work away from a running agent must not do is
+treat "I could not tell" as "it is dead".
+
+**A running worker is still subject to the timeout.** Tempting to exempt it now
+that the fact is available — the old note here complained that a slow, quiet
+worker gets killed under this rule — and wrong: a wedged container never exits,
+so an exemption trades a rare wrong kill for a ticket stuck forever with no
+recovery but a human and a shell. What changed is that the clock is no longer the
+*only* signal, not that it is gone.
+
+**Why the worker does not release its own claim.** It looked like the obvious
+fast path, and the ticket suggested it. Releasing is two halves — drop the claim
+comment and drop the `status:in-progress` label — because a ticket is held if it
+has *either*. `worker.py` has no label call at all, by design, so a self-release
+would clear the lock and leave the mirror, and the ticket would still be skipped
+as held. A half-release is not a release.
 
 Reaping stops and removes the container through the spawn dispatcher, posts a
 release marker explaining what happened, and moves the ticket back to
 **`status:backlog`** so that its state stops claiming a worker is running.
+
+**Reaping now runs first, and by default.** `dispatch` reaps before it plans, not
+after: a dead worker's claim is exactly what makes the next pass skip its ticket
+as `already_claimed`, so releasing it afterwards means the release only takes
+effect on the pass after this one — and a human asking twice was the whole
+friction. `--no-reap` opts out; `--reap` is still accepted and is now a no-op.
+
+### Measured, live
+
+A ticket in `premium-toolkit-demo` written to fail on purpose. Its worker exited
+**1** thirty-five seconds in (the model declined to add an unsanctioned
+dependency, so nothing was staged). One dispatch pass, twenty-two seconds later,
+with no `--timeout` override and nothing removed by hand:
+
+```
+container BEFORE:  hermes-worker-11  Exited (1) 21 seconds ago
+
+T=14:13:04
+reap   # 11 released  container=exited   reason=worker_exited  exit_code=1
+reap   #  4 none      container=-        reason=PR #10 is open and awaiting a human
+claim  # 11 claimed=True -> hermes-worker-11
+T=14:13:18  (pass complete)
+
+container AFTER:   hermes-worker-11  Up 2 seconds
+```
+
+Fourteen seconds, on a claim ninety seconds old, where the old behaviour was
+forty-five minutes and two manual commands. The `#4` line in the middle is the
+control that makes the release mean something: in the same pass, a claim whose
+worker had *also* exited was kept, because a human has not merged its pull
+request yet.
 
 Note what that no longer does. With the approval gate removed, `status:backlog`
 withholds nothing — the ticket is immediately dispatchable again. What still
@@ -214,6 +287,16 @@ with a defensible default disagreed once and every `/spawn` was refused, which
 reads as a spawn failure rather than as a configuration mismatch. The harness
 fixtures read the same variable.
 
+Because the name is derived from the issue number, **every re-dispatch of an
+issue wants the name its previous attempt still holds.** A finished container
+keeps its name until it is removed, so the second attempt at an issue used to
+fail `409 Conflict: name already in use` and needed a hand-run `docker rm` — the
+second stale artefact per failure, alongside the claim. A 409 is now recovered:
+the dispatcher asks `/status`, and **only if the namesake is positively not
+running** removes it and retries the spawn exactly once. Never on unknown, never
+on a running container, and never in a loop — "clear the old container" would
+otherwise be a very direct way to put two workers on one issue.
+
 Measured, live (`./verify-dispatch.sh spawn`, with `./p1-spawn-setup.sh` up):
 
 ```
@@ -236,7 +319,7 @@ cycle, a dead worker, a claim race and a case-only filename collision at the sam
 instant.
 
 ```
-RESULT: 67 passed, 0 failed
+RESULT: 85 passed, 0 failed
 ```
 
 Suites: scheduling (positive control first), what must never be dispatched,
@@ -291,13 +374,13 @@ A dispatcher that spawns a worker *without* posting a claim comment — an older
 version, or a hand-run `docker run` — is invisible to the election. The label
 check catches it only after that dispatcher relabels.
 
-**Reaping cannot distinguish "dead" from "slow and quiet".** A worker that works
-for an hour without heartbeating will have its container killed under it. The
-heartbeat contract lives in the worker's prompt, and a prompt is a guardrail
+**Reaping still cannot distinguish "wedged" from "slow and quiet".** It can now
+tell *dead* from either — `/status` answers that — but a container that is
+running and producing nothing looks identical whether it is thinking hard or
+hung, and the 45-minute clock will still kill it. The heartbeat contract that
+would narrow this lives in the worker's prompt, and a prompt is a guardrail
 against accident, not a control — the same lesson `ORCHESTRATOR.md` records about
-the `/tmp` write. A `/status` verb on the spawn dispatcher (returning only
-running/exited for a labelled worker) would replace the guess with a fact; it was
-not added because that file is out of scope for this change.
+the `/tmp` write.
 
 **A worker's own writes are unpoliced between claim and validation.** Nothing
 stops a running worker from editing a file outside its list; the diff-scope check
@@ -347,7 +430,8 @@ Everything is environment, and every machine-specific value belongs in
 | `TARGET_REPO` | — | `owner/name` of the target repository |
 | `TARGET_REPO_TOKEN` | — | repo-scoped token; read at runtime, never logged |
 | `P4_MAX_CONCURRENCY` | `3` | workers in flight |
-| `P4_WORKER_TIMEOUT_MINUTES` | `45` | silence before a claim is reaped |
+| `P4_WORKER_TIMEOUT_MINUTES` | `45` | silence before a claim is reaped — the backstop, no longer the mechanism |
+| `P4_SPAWN_GRACE_MINUTES` | `2` | how long a MISSING container is forgiven after its claim is posted |
 | `P4_POLL_INTERVAL` | `60` | seconds between passes with `--interval` |
 | `P4_SPAWN_URL` / `P4_SPAWN_TOKEN` | `http://p1-dispatcher:2375` | the spawn dispatcher |
 | `P4_WORKER_NAME_PREFIX` | `p1-p4w-` | must start with `p1-dispatcher`'s prefix |
@@ -357,8 +441,8 @@ Everything is environment, and every machine-specific value belongs in
 
 ```bash
 python3 p4-dispatch-loop.py plan --source github --limit 3        # read-only
-python3 p4-dispatch-loop.py dispatch --source github --reap --interval 60
+python3 p4-dispatch-loop.py dispatch --source github --interval 60  # reaps first, by default
 python3 p4-dispatch-loop.py validate --source github --issue 42 --checkout ./target
-./verify-dispatch.sh                                              # 67 checks
+./verify-dispatch.sh                                              # 85 checks
 ./verify-dispatch.sh spawn                                        # + live containers
 ```

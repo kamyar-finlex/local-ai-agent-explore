@@ -205,7 +205,7 @@ ENV INJECTION  (values from the dispatcher's own environment, never the request)
   PASS  git can branch and commit inside the workspace (a worker can produce a PR branch)
   PASS  token absent from the worker's own log output
 
-RESULT (dispatcher): 68 passed, 0 failed
+RESULT (dispatcher): 94 passed, 0 failed
 ```
 
 Two notes on how that transcript was captured, because both affect what it proves:
@@ -245,9 +245,43 @@ boundary:
 - **Destructive verbs are label-scoped.** `stop`/`remove` first `GET` the target
   and refuse (403) anything not carrying `role=hermes-worker`. That is why
   pointing `/stop` at `hermes` is refused with the real `hermes` left running.
-- **The surface is three verbs.** No raw Docker API, no `exec`, no `build`, no
+- **The surface is four verbs.** No raw Docker API, no `exec`, no `build`, no
   inventory read — all 404. Contrast the proxy, which exposes the whole
   `/containers` tree including reads of every other container.
+
+  The fourth verb, `/status`, was added under TECH-102 and is worth describing
+  precisely, because "we added a read verb to the thing whose narrowness was the
+  security argument" deserves more than a changelog line.
+
+  The dispatch loop had no way to ask whether a worker was alive, so it inferred
+  death from silence: a claim released only after a 45-minute timeout, and a
+  worker that failed in thirty seconds held its ticket for the rest of the hour.
+  The only workaround released live workers' claims too. So the verb answers
+  **one question about one named container** — running, exited, or gone — and:
+
+  - it takes a single name. No list form, no wildcard, no filter, no "all". The
+    harness asserts each of those is a 400 rather than assuming it;
+  - the response is built field by field from a declared constant,
+    `STATUS_FIELDS = (name, exists, running, exit_code)`, never as a subset of
+    Docker's body — a subset is one careless edit from a superset. The code
+    refuses the request if the body ever drifts from that list;
+  - it carries the same label guard as `stop`/`remove`, so a name that is not one
+    of our workers is a 403 that discloses nothing about it;
+  - it lives on `POST`, not `GET`, so it passes through the single bearer-check
+    chokepoint. An authenticated read route written a second time is one
+    forgotten line away from unauthenticated inventory.
+
+  This matters because it is exactly where the socket proxy failed: with
+  credentials in play, its `GET /containers/{id}/json` hands back `Env`, and the
+  injected `GITHUB_TOKEN` with it. `verify-spawning.sh` proves the point in both
+  directions — it asserts the token is absent from a real `/status` body, and
+  then stands up a **mutant dispatcher whose `/status` returns the whole inspect
+  body** and confirms the checks go red against it. They do: 27 keys, and the
+  credential readable. That is what the four-field response is buying.
+
+  The one thing it discloses that nothing else did: whether a given name exists.
+  That oracle was already there — `/stop` answers 404 for a missing container and
+  403 for someone else's — so this is a cheaper way to ask, not a new fact.
 - **It enforces *more* than the proxy ever could.** Because it owns the template,
   every worker is created with `CapDrop:["ALL"]`, `no-new-privileges`, a memory
   cap, `ReadonlyRootfs`, a pinned network, exactly one writable tmpfs, and exactly
@@ -447,7 +481,7 @@ Honest limits of the chosen design:
 
 ```bash
 docker compose up -d              # option (d) is the composed stack: hermes-dispatcher
-./verify-spawning.sh dispatcher   # option (d): 68 passed, 0 failed, exit 0 (recommended)
+./verify-spawning.sh dispatcher   # option (d): 94 passed, 0 failed, exit 0 (recommended)
 
 ./p1-spawn-setup.sh               # option (a)'s standalone rig, p1-* namespaced
 ./verify-spawning.sh proxy        # option (a): 8 passed, 10 failed, exit 1 (security theatre)

@@ -1,0 +1,178 @@
+{
+  "_comment": [
+    "TECH-102: reaping on what the CONTAINER says, not on a clock. Every claim",
+    "here is FRESH - one minute old against the harness's --now - so the 45-minute",
+    "timeout cannot fire for any of them. Anything released here is released",
+    "because /status said the worker had stopped, and for no other reason.",
+    "",
+    "  #70  exited 6      -> released immediately (the case that cost 45 minutes)",
+    "  #71  running       -> survives. THE POSITIVE CONTROL, inverted: without it,",
+    "                        a reaper that released everything would pass #70.",
+    "  #72  gone, old     -> released: no container, and the claim outlived the",
+    "                        spawn grace period",
+    "  #73  gone, seconds -> survives: the claim comment is written BEFORE the",
+    "                        container exists, so a reaper racing a dispatcher",
+    "                        must not take the ticket off a worker being born",
+    "  #74  exited 0 with an open PR -> survives. The file lock is held until a",
+    "                        human MERGES, not until the worker finishes.",
+    "  #75  exited, unknown to /status -> falls back to the clock, and its claim",
+    "                        is fresh, so it survives. Not knowing is not dying.",
+    "",
+    "Liveness comes from the sidecar the harness writes next to the record file",
+    "(<record>.status.json), which is what RecordingSpawner answers /status from.",
+    "Nothing here is real: the repo, the paths and the commands are invented."
+  ],
+  "repo": "example/target",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 70,
+      "title": "Worker exited 6 thirty seconds ago",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Its acceptance command failed and the container stopped.",
+        "",
+        "## Files touched",
+        "- src/exited.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_exited.py"
+      ]
+    },
+    {
+      "number": 71,
+      "title": "Worker is running right now",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Working. Reaping this destroys work in progress.",
+        "",
+        "## Files touched",
+        "- src/running.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_running.py"
+      ]
+    },
+    {
+      "number": 72,
+      "title": "No container, and the claim is older than the spawn grace period",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Its container vanished - OOM-killed, or removed by hand.",
+        "",
+        "## Files touched",
+        "- src/gone.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_gone.py"
+      ]
+    },
+    {
+      "number": 73,
+      "title": "No container yet, claimed seconds ago",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Claimed, container not created yet. The race the grace period exists for.",
+        "",
+        "## Files touched",
+        "- src/newborn.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_newborn.py"
+      ]
+    },
+    {
+      "number": 74,
+      "title": "Worker exited 0 and its pull request is open",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Finished. Its files stay reserved until a human merges.",
+        "",
+        "## Files touched",
+        "- src/merged_soon.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_merged_soon.py"
+      ]
+    },
+    {
+      "number": 75,
+      "title": "Liveness cannot be determined",
+      "state": "open",
+      "labels": ["status:in-progress", "priority:3"],
+      "body_lines": [
+        "## Goal",
+        "The spawn dispatcher could not be asked. Not knowing is not dying.",
+        "",
+        "## Files touched",
+        "- src/unknown.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_unknown.py"
+      ]
+    }
+  ],
+  "comments": {
+    "70": [
+      {
+        "id": 7001,
+        "created_at": "2026-01-01T11:59:00Z",
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-fixture\",\"issue\":70,\"nonce\":\"70aa70aa70aa70aa\",\"worker\":\"hermes-worker-70\"} -->\nClaimed."
+      }
+    ],
+    "71": [
+      {
+        "id": 7101,
+        "created_at": "2026-01-01T11:59:00Z",
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-fixture\",\"issue\":71,\"nonce\":\"71aa71aa71aa71aa\",\"worker\":\"hermes-worker-71\"} -->\nClaimed."
+      }
+    ],
+    "72": [
+      {
+        "id": 7201,
+        "created_at": "2026-01-01T11:50:00Z",
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-fixture\",\"issue\":72,\"nonce\":\"72aa72aa72aa72aa\",\"worker\":\"hermes-worker-72\"} -->\nClaimed."
+      }
+    ],
+    "73": [
+      {
+        "id": 7301,
+        "created_at": "2026-01-01T11:59:50Z",
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-fixture\",\"issue\":73,\"nonce\":\"73aa73aa73aa73aa\",\"worker\":\"hermes-worker-73\"} -->\nClaimed."
+      }
+    ],
+    "74": [
+      {
+        "id": 7401,
+        "created_at": "2026-01-01T11:59:00Z",
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-fixture\",\"issue\":74,\"nonce\":\"74aa74aa74aa74aa\",\"worker\":\"hermes-worker-74\"} -->\nClaimed."
+      }
+    ],
+    "75": [
+      {
+        "id": 7501,
+        "created_at": "2026-01-01T11:59:00Z",
+        "body": "<!-- p4-claim {\"dispatcher\":\"p4-fixture\",\"issue\":75,\"nonce\":\"75aa75aa75aa75aa\",\"worker\":\"hermes-worker-75\"} -->\nClaimed."
+      }
+    ]
+  },
+  "pulls": [
+    {
+      "number": 740,
+      "state": "open",
+      "head": "issue-74-worker-exited-0",
+      "title": "Finished work awaiting a human",
+      "body": "Closes #74"
+    }
+  ]
+}

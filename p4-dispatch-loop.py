@@ -31,8 +31,12 @@ Sources (--source)
                     so the scheduling logic is provable without live GitHub.
 
 Spawners (--spawn)
-  http              POST /spawn to p1-dispatcher (P4_SPAWN_URL, P4_SPAWN_TOKEN).
-  record:<path>     append the spawn requests to a JSONL file; create nothing.
+  http              POST /spawn, /stop, /remove, /status to p1-dispatcher
+                    (P4_SPAWN_URL, P4_SPAWN_TOKEN).
+  record:<path>     append the requests to a JSONL file; create nothing. Reads
+                    container liveness from an optional <path>.status.json, so a
+                    harness can drive `reap` through exited / gone / running
+                    without a Docker daemon.
   none              dry run.
   fail              always fail, to exercise the claim-release path.
 
@@ -69,6 +73,14 @@ TOKEN            = os.environ.get("TARGET_REPO_TOKEN", "")
 API_ROOT         = os.environ.get("P4_GITHUB_API", "https://api.github.com")
 MAX_CONCURRENCY  = int(os.environ.get("P4_MAX_CONCURRENCY", "3"))
 WORKER_TIMEOUT_M = int(os.environ.get("P4_WORKER_TIMEOUT_MINUTES", "45"))
+# How long after a claim is posted a MISSING container is still forgivable.
+# The claim comment is written before the container is created - elect, then
+# spawn, then relabel - so for a moment a perfectly healthy claim has nothing to
+# inspect. Reaping inside that window takes the ticket away from a worker that
+# is still being born. Two minutes is far longer than the gap needs to be and
+# still far shorter than the 45-minute clock it replaces; an EXITED container
+# needs no grace at all, because that answer is unambiguous.
+SPAWN_GRACE_M    = int(os.environ.get("P4_SPAWN_GRACE_MINUTES", "2"))
 # Default to the name the composed stack actually uses. The old default,
 # p1-dispatcher, was the standalone rig's container and does not exist under
 # compose - and because it is absent from NO_PROXY, urllib handed the request
@@ -856,6 +868,20 @@ class SpawnError(Exception):
     pass
 
 
+class SpawnConflict(SpawnError):
+    """The name is already taken. Separated from SpawnError because it is the one
+    spawn failure that is routinely RECOVERABLE - a finished container from a
+    previous attempt at the same issue, still holding its name - and the caller
+    treats it differently from "the dispatcher refused"."""
+
+
+# What a spawner reports when it genuinely does not know. Distinct from
+# {"exists": False}, which is a positive statement that the container is gone.
+# The difference decides whether `reap` releases a claim or leaves it to the
+# clock, so it must never collapse into a boolean.
+STATUS_UNKNOWN = None
+
+
 class HttpSpawner:
     """The ONLY way this program creates a container: POST /spawn to
     p1-dispatcher (SPAWNING-DECISION.md option (d)). It sends a name and a
@@ -883,7 +909,16 @@ class HttpSpawner:
             raise SpawnError(redact(f"{verb} -> {e}"))
 
     def spawn(self, name: str, cmd: list):
-        status, body = self._post("/spawn", {"name": name, "cmd": cmd})
+        try:
+            status, body = self._post("/spawn", {"name": name, "cmd": cmd})
+        except SpawnError as e:
+            # Docker answers 409 for a name already in use. That is the single
+            # most common spawn failure here and it is not a refusal: it is the
+            # corpse of the previous attempt at this same issue still holding
+            # the name. Typed so the caller can clear it rather than give up.
+            if "409" in str(e) and "name" in str(e).lower():
+                raise SpawnConflict(str(e))
+            raise
         if status != 201:
             raise SpawnError(f"spawn returned {status}: {body}")
         return body
@@ -900,10 +935,47 @@ class HttpSpawner:
         except SpawnError as e:
             log(f"remove {name}: {e}")
 
+    def status(self, name: str):
+        """Is this one worker still running? Returns the dispatcher's answer, or
+        STATUS_UNKNOWN when it cannot be asked.
+
+        Unknown rather than an exception, and unknown rather than "dead", because
+        every caller of this is deciding whether to take a ticket away from a
+        worker. A dispatcher too old to have /status answers 404 'unknown verb';
+        a network blip raises. Both mean *we do not know*, and the correct
+        behaviour on not knowing is to fall back to the clock, never to reap."""
+        try:
+            code, body = self._post("/status", {"name": name})
+        except SpawnError as e:
+            log(f"status {name}: {e}")
+            return STATUS_UNKNOWN
+        if code != 200 or not isinstance(body, dict) or "running" not in body:
+            log(f"status {name}: unusable reply {body!r}")
+            return STATUS_UNKNOWN
+        return body
+
 
 class RecordingSpawner:
+    """Records every verb to a JSONL file and creates nothing.
+
+    Container liveness is answered from an optional sidecar, `<path>.status.json`,
+    mapping worker name -> the body /status would return. Absent file, or a name
+    it does not mention, means STATUS_UNKNOWN - so a harness that says nothing
+    about liveness exercises the timeout path exactly as before, and only a
+    harness that opts in exercises the new one. A sidecar rather than a new
+    --spawn vocabulary because the reap suites already choose their spawner by
+    the record path, and one more spec to keep in sync with the docs is one more
+    thing to get wrong.
+    """
+
     def __init__(self, path: str):
         self.path = path
+        self.states = {}
+        try:
+            with open(path + ".status.json") as fh:
+                self.states = json.load(fh)
+        except (OSError, ValueError):
+            pass
 
     def _write(self, rec: dict):
         with open(self.path, "a") as fh:
@@ -911,6 +983,9 @@ class RecordingSpawner:
 
     def spawn(self, name, cmd):
         self._write({"verb": "spawn", "name": name, "cmd": cmd})
+        st = self.states.get(name)
+        if isinstance(st, dict) and st.get("spawn_conflict"):
+            raise SpawnConflict(f"/spawn -> 409: name {name} already in use (simulated)")
         return {"id": "recorded", "name": name}
 
     def stop(self, name):
@@ -918,6 +993,17 @@ class RecordingSpawner:
 
     def remove(self, name):
         self._write({"verb": "remove", "name": name})
+        # A removed namesake is gone, and the 409-recovery path spawns again
+        # straight afterwards. Without this the simulated conflict would repeat
+        # forever and the retry would look broken rather than the fixture.
+        if name in self.states:
+            self.states[name] = {"name": name, "exists": False,
+                                 "running": False, "exit_code": None}
+
+    def status(self, name):
+        self._write({"verb": "status", "name": name})
+        st = self.states.get(name)
+        return st if isinstance(st, dict) and "running" in st else STATUS_UNKNOWN
 
 
 class NullSpawner:
@@ -930,6 +1016,9 @@ class NullSpawner:
     def remove(self, name):
         pass
 
+    def status(self, name):
+        return STATUS_UNKNOWN
+
 
 class FailingSpawner:
     def spawn(self, name, cmd):
@@ -940,6 +1029,9 @@ class FailingSpawner:
 
     def remove(self, name):
         pass
+
+    def status(self, name):
+        return STATUS_UNKNOWN
 
 
 # --------------------------------------------------------------------------- #
@@ -959,6 +1051,39 @@ def worker_cmd(number: int, repo: str) -> list:
 
 def dispatcher_id() -> str:
     return DISPATCHER_ID or f"p4-{os.getpid()}-{int(time.time())}"
+
+
+def spawn_clearing_a_dead_namesake(spawner, name: str, cmd: list) -> dict:
+    """Spawn, and if the name is already taken by something that is no longer
+    running, remove that and try once more.
+
+    Worker names are derived from the issue number, so every re-dispatch of an
+    issue wants the name its previous attempt still holds. A finished container
+    keeps its name until it is removed, so the second attempt at issue #7 used to
+    fail with `409 Conflict: name already in use` and needed a hand-run
+    `docker rm hermes-worker-7` before it could be tried again. That was the
+    second stale artefact per failure, alongside the claim itself.
+
+    The recovery is narrow on purpose. It clears a namesake only when /status
+    positively says it is NOT running - never on unknown, never on a running
+    container, and it retries exactly once. A retry loop here would be a way to
+    kill a live worker by asking for its ticket twice.
+    """
+    try:
+        return spawner.spawn(name, cmd)
+    except SpawnConflict as conflict:
+        st = spawner.status(name)
+        if st is STATUS_UNKNOWN:
+            raise SpawnError(f"{conflict}; cannot tell whether the existing {name} is alive, "
+                             "so it was left alone")
+        if st.get("running"):
+            # Somebody's worker is genuinely using this name. Refusing is right:
+            # two workers on one issue is the collision everything else prevents.
+            raise SpawnError(f"{conflict}; {name} is still RUNNING and was not touched")
+        log(f"{name}: clearing a finished container of the same name "
+            f"(exit {st.get('exit_code')}) and retrying the spawn once")
+        spawner.remove(name)
+        return spawner.spawn(name, cmd)
 
 
 def claim_and_spawn(client, spawner, ticket: Ticket, disp_id: str, repo: str) -> dict:
@@ -1014,7 +1139,7 @@ def claim_and_spawn(client, spawner, ticket: Ticket, disp_id: str, repo: str) ->
                 "reason": f"lost claim race to {winner.payload.get('dispatcher', '?') if winner else '?'}"}
 
     try:
-        result = spawner.spawn(name, worker_cmd(number, repo))
+        result = spawn_clearing_a_dead_namesake(spawner, name, worker_cmd(number, repo))
     except SpawnError as e:
         client.create_comment(number, make_marker(RELEASE_MARK, {"nonce": nonce, "reason": "spawn_failed"})
                               + f"\nWorker could not be started: {redact(str(e))}. "
@@ -1061,17 +1186,54 @@ def report_defects(client, plan: Plan) -> int:
 # reaping - a worker that dies must not hold its ticket forever
 # --------------------------------------------------------------------------- #
 
-def reap(client, spawner, now: dt.datetime, timeout_minutes: int, pulls: list) -> list:
-    """Release claims whose worker has gone silent.
+def reap(client, spawner, now: dt.datetime, timeout_minutes: int, pulls: list,
+         spawn_grace_minutes: int = SPAWN_GRACE_M) -> list:
+    """Release the claim of a worker that is no longer running.
 
-    Liveness cannot be asked of the spawn dispatcher: its interface is three
-    verbs and deliberately exposes no inventory, no /logs and no /wait. So the
-    signal is time - the claim comment's server timestamp, refreshed by the
-    worker's own heartbeat comments - and the action is: stop the container,
-    say so on the issue, and drop the ticket back to status:backlog so it is
-    plainly not in flight. With the approval gate gone that label no longer
-    withholds anything: the ticket is dispatchable again immediately, and it is
-    the human's next prompt, not a label, that decides whether it runs.
+    This used to be timeout-only, and the timeout is still here - but as a
+    backstop rather than the mechanism. The reason it was the mechanism is worth
+    keeping: the spawn dispatcher exposes no inventory, so the loop could not ask
+    whether a worker was alive and had to infer it from silence. A worker that
+    failed in thirty seconds therefore held its ticket for forty-five minutes,
+    and the workaround - `reap --timeout 0` - releases live workers' claims too,
+    so it cannot be run while anything else is working.
+
+    `/status` closes that: one name in, running/exited/gone out, and nothing
+    else (see p1-dispatcher.status for why it is that narrow). The order of the
+    tests below is the whole design:
+
+      1. **An open pull request is never reaped**, whatever the container says.
+         This is checked FIRST and it is not an optimisation. A worker that
+         exits 0 has finished, and its container is gone within seconds - but
+         its files must stay reserved until a human MERGES, or a second worker
+         starts editing files that an unmerged branch still changes and the
+         conflict lands on the human at merge time. Moving this test below the
+         status test would release every successful ticket the moment it
+         finished, which is the exact opposite of what this function is for.
+      2. **Exited** - the container exists and is not running. Unambiguous, so
+         it is released immediately with no clock involved. This is the case
+         that used to cost forty-five minutes.
+      3. **Gone** - no container by that name. Also dead, but only once the
+         claim has outlived `spawn_grace_minutes`: the claim comment is posted
+         BEFORE the container is created (elect, then spawn, then relabel), so
+         for a second or two after a legitimate claim there is genuinely nothing
+         to inspect. Without the grace period a reaper racing a dispatcher would
+         release the ticket out from under a worker that was still being born.
+      4. **Unknown** - the dispatcher could not be asked, or is too old to have
+         the verb. Falls through to the timeout, unchanged. Not knowing must
+         never mean reaping.
+      5. **Running** - the timeout still applies. Tempting to exempt it now that
+         the fact is available, and wrong: a wedged container never exits, so an
+         exemption trades a rare wrong kill for a ticket stuck forever with no
+         recovery but a human and a shell. The clock stays as the backstop it
+         always was; what changed is that it is no longer the only signal.
+
+    Releasing is two halves: drop the claim comment, and drop the
+    `status:in-progress` label. Both are required, because a ticket is held if it
+    has EITHER. That is also why the worker does not release its own claim on
+    exit, which looked like the obvious fast path: `worker.py` has no label call
+    at all, by design, so a self-release would clear the lock and leave the
+    mirror, and the ticket would still be skipped as held.
     """
     actions = []
     issues = client.list_issues()
@@ -1087,29 +1249,83 @@ def reap(client, spawner, now: dt.datetime, timeout_minutes: int, pulls: list) -
             actions.append({"issue": t.number, "action": "none",
                             "reason": "in-progress without a claim comment (hand-labelled?)"})
             continue
+
         stamp = last_heartbeat(comments, claim.nonce) or claim.created_at
         age_min = (now - parse_ts(stamp)).total_seconds() / 60.0
-        if age_min <= timeout_minutes:
-            actions.append({"issue": t.number, "action": "none", "age_minutes": round(age_min, 1),
-                            "reason": "claim is fresh"})
-            continue
+        claim_age_min = (now - parse_ts(claim.created_at)).total_seconds() / 60.0
+
+        # (1) Finished work waiting on a human keeps its files reserved.
         open_pr = [p for p in pulls if pr_references(p, t.number) and p.get("state") == "open"]
         if open_pr:
             actions.append({"issue": t.number, "action": "none", "age_minutes": round(age_min, 1),
                             "reason": f"PR #{open_pr[0]['number']} is open and awaiting a human"})
             continue
+
+        st = spawner.status(claim.worker)
+        if st is STATUS_UNKNOWN:
+            container = "unknown"
+        elif not st.get("exists"):
+            container = "gone"
+        elif st.get("running"):
+            container = "running"
+        else:
+            container = "exited"
+
+        # (2) and (3): the container itself says the worker is finished. No clock.
+        if container == "exited":
+            code = st.get("exit_code")
+            why = "worker_exited"
+            human = (f"Worker `{claim.worker}` has exited"
+                     + (f" with code {code}" if code is not None else "")
+                     + ". Its claim is released immediately - no timeout was waited out.")
+        elif container == "gone" and claim_age_min > spawn_grace_minutes:
+            why = "container_gone"
+            human = (f"No container named `{claim.worker}` exists any more, and the claim is "
+                     f"{claim_age_min:.0f} minutes old. Treating the worker as dead and "
+                     "releasing the claim.")
+        elif container == "gone":
+            # The claim is posted before the container exists. Do not race it.
+            actions.append({"issue": t.number, "action": "none", "container": container,
+                            "age_minutes": round(age_min, 1),
+                            "reason": f"claim is {claim_age_min:.1f}m old, inside the "
+                                      f"{spawn_grace_minutes}m spawn grace period"})
+            continue
+        elif age_min > timeout_minutes:
+            # (5) The clock, unchanged, and still the ONLY recovery from a worker
+            # that is running but wedged. It would be tempting to make `running`
+            # mean "never reap" now that we can see it - the old docs complain
+            # that a slow, quiet worker gets killed under this rule - but a
+            # container that hangs never exits, so removing the clock here trades
+            # a rare wrong kill for a ticket that is stuck forever with no
+            # recovery but a human and a shell.
+            why = "timeout"
+            human = (f"Worker `{claim.worker}` produced nothing for {age_min:.0f} minutes "
+                     f"(timeout {timeout_minutes}m); its container is {container}. "
+                     "The claim is released on the clock, as a backstop.")
+        else:
+            actions.append({"issue": t.number, "action": "none", "container": container,
+                            "age_minutes": round(age_min, 1),
+                            "reason": ("its worker is still running" if container == "running"
+                                       else "cannot ask whether the worker is alive; "
+                                            "claim is inside the timeout")})
+            continue
+
+        # Stop is a no-op for something already exited or gone; remove is the
+        # half that matters, because a container keeps its NAME until it is
+        # removed and /spawn answers 409 for a name in use.
         spawner.stop(claim.worker)
         spawner.remove(claim.worker)
         client.create_comment(
             t.number,
-            make_marker(RELEASE_MARK, {"nonce": claim.nonce, "reason": "timeout"}) + "\n"
-            f"Worker `{claim.worker}` produced nothing for {age_min:.0f} minutes "
-            f"(timeout {timeout_minutes}m). Its container was stopped and removed and the "
-            "claim released.\n\nThe ticket is back to `status:backlog` and can be dispatched "
-            "again by asking for it. Check the branch for partial work before restarting.")
+            make_marker(RELEASE_MARK, {"nonce": claim.nonce, "reason": why}) + "\n"
+            + human + "\n\nIts container was stopped and removed and the claim released. "
+            "The ticket is back to `status:backlog` and can be dispatched again by asking "
+            "for it. Check the branch for partial work before restarting.")
         client.add_labels(t.number, [LBL_BACKLOG])
         client.remove_label(t.number, LBL_IN_PROGRESS)
         actions.append({"issue": t.number, "action": "released", "worker": claim.worker,
+                        "container": container, "reason": why,
+                        "exit_code": st.get("exit_code") if isinstance(st, dict) else None,
                         "age_minutes": round(age_min, 1)})
     return actions
 
@@ -1297,10 +1513,21 @@ def cmd_plan(args) -> int:
 
 
 def one_pass(args, client, spawner, disp_id: str) -> dict:
+    outcome = {"plan": {}, "claims": [], "reap": [], "defects_reported": 0}
+
+    # Reap BEFORE planning, not after. A dead worker's claim is exactly what
+    # makes the next dispatch skip its ticket as `already_claimed`, so releasing
+    # it afterwards means the release only takes effect on the pass after this
+    # one - and a human asking twice was the whole friction this is fixing.
+    # Reaping first makes one `dispatch` clear the corpse and start the work.
+    if args.reap:
+        now = parse_ts(args.now) if args.now else utcnow()
+        outcome["reap"] = reap(client, spawner, now, args.timeout, client.list_pulls())
+
     issues, comments = gather(client)
     plan = build_plan(issues, comments, args.limit)
     repo = getattr(client, "repo", REPO)
-    outcome = {"plan": plan.as_dict(), "claims": [], "reap": [], "defects_reported": 0}
+    outcome["plan"] = plan.as_dict()
 
     if not args.no_report:
         outcome["defects_reported"] = report_defects(client, plan)
@@ -1310,9 +1537,6 @@ def one_pass(args, client, spawner, disp_id: str) -> dict:
         outcome["claims"].append(res)
         log(f"#{ticket.number} {'dispatched to ' + res['worker'] if res['claimed'] else 'NOT claimed: ' + res['reason']}")
 
-    if args.reap:
-        now = parse_ts(args.now) if args.now else utcnow()
-        outcome["reap"] = reap(client, spawner, now, args.timeout, client.list_pulls())
     client.save()
     return outcome
 
@@ -1386,7 +1610,15 @@ def main(argv=None) -> int:
     sp.add_argument("--spawn", default="http", help="http | record:<file> | none | fail")
     sp.add_argument("--interval", type=int, default=0, help="poll every N seconds (0 = one pass)")
     sp.add_argument("--lock", default=LOCK_PATH)
-    sp.add_argument("--reap", action="store_true", help="also release timed-out claims")
+    # Reaping is ON by default. It used to be opt-in, from when it was a
+    # timeout-only sweep that could take a ticket off a live-but-slow worker;
+    # now it asks the container and only releases what has actually stopped, so
+    # leaving it off costs a human an extra prompt and buys nothing. --reap is
+    # kept as an accepted no-op so existing commands and scripts do not break.
+    sp.add_argument("--reap", action="store_true", default=True,
+                    help="release dead workers' claims first (default; use --no-reap to skip)")
+    sp.add_argument("--no-reap", dest="reap", action="store_false",
+                    help="do not release claims in this pass")
     sp.add_argument("--timeout", type=int, default=WORKER_TIMEOUT_M)
     sp.add_argument("--no-report", action="store_true", help="do not comment defects")
     sp.set_defaults(func=cmd_dispatch)

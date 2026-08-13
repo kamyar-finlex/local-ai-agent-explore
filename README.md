@@ -20,7 +20,7 @@ the boundary is measured from outside the agent, mechanically, on every run.
 >
 > ### → **[TESTING.md](TESTING.md)** — reproduce it yourself, step by step
 >
-> ### → **[SPAWNING-DECISION.md](SPAWNING-DECISION.md)** — spawning workers without a Docker socket: an off-the-shelf socket proxy **broken** (9 failures), a body-validating dispatcher **21/0**
+> ### → **[SPAWNING-DECISION.md](SPAWNING-DECISION.md)** — spawning workers without a Docker socket: an off-the-shelf socket proxy **broken** (10 failures, one of them a credential read), a body-validating dispatcher **94/0**
 >
 > ### → **[MODEL-EVALUATION.md](MODEL-EVALUATION.md)** — which local models can actually orchestrate, and why KV cache decides it
 
@@ -406,7 +406,7 @@ fixture.
 | `MODEL-EVALUATION.md` | Model choice: KV cost, concurrency limits, measured verdict |
 | `SPAWNING-DECISION.md` | Spawning workers without a Docker socket, with the exploit |
 | `p1-dispatcher.py` | Body-validating spawn dispatcher (the recommendation) |
-| `verify-spawning.sh` | Adversarial harness: `proxy` (fails) vs `dispatcher` (passes) |
+| `verify-spawning.sh` | Adversarial harness: `proxy` (fails) vs `dispatcher` (passes, 94 checks incl. a `/status` mutation control) |
 | `EGRESS.md` | Domain-allowlisted HTTPS egress: design, allowlist, results |
 | `setup-egress.sh` | Builds the `p2-*` egress sandbox; `teardown` removes it |
 | `egress-proxy.conf` | squid domain allowlist, CONNECT-only, ordered denies |
@@ -433,7 +433,7 @@ fixture.
 | `P4-DISPATCH.md` | The dispatch loop: readiness as arithmetic, claiming, reaping, validation |
 | `p4-dispatch-loop.py` | The loop itself: `plan` / `dispatch` / `reap` / `validate`, stdlib only |
 | `hermes-skills/.../orchestrator-dispatch/` | The dispatch skill and its copy of that script |
-| `verify-dispatch.sh` | Dispatch verification: 67 checks against fixtures, plus a live `spawn` mode |
+| `verify-dispatch.sh` | Dispatch verification: 85 checks against fixtures, plus a live `spawn` mode |
 | `p4-fixtures/*.json` | The repository states the scheduler is tested against |
 | `PARALLEL-RUN.md` | The three-worker parallel run: evidence, method, and what it does not prove |
 | `verify-parallel.sh` | Parallel-run verification: 25 checks, `live` re-query, and a 22-case mutation battery |

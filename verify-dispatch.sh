@@ -245,7 +245,10 @@ with_timeout 60 python3 "$SCRIPT" dispatch --source "fixture:$WORK/claim.state.j
   --fixture-out "$WORK/claim2.state.json" --now "$NOW" --limit 3 \
   --spawn "record:$WORK/claim2.jsonl" --lock "$WORK/claim2.lock" \
   > "$WORK/claim2.out.json" 2> "$WORK/claim2.err"
-grep -q 'hermes-worker-16' "$WORK/claim2.jsonl" 2>/dev/null \
+# On the VERB, not on the name. The pass legitimately mentions hermes-worker-16
+# now - reap asks /status about every held ticket before planning - and matching
+# the bare name would read that harmless question as a second worker.
+grep -q '"name": "hermes-worker-16", "verb": "spawn"' "$WORK/claim2.jsonl" 2>/dev/null \
   && bad "a second pass spawned a SECOND worker for #16" \
   || ok "a second pass does not re-dispatch #16 (label + claim comment both hold it)"
 # A competing dispatcher inserts its claim, with a lower comment id, in the exact
@@ -313,10 +316,19 @@ if grep -q '"name": "hermes-worker-20", "verb": "stop"' "$WORK/reap.jsonl" &&
 else
   bad "the dead worker's container was never cleaned up: $(tr '\n' ' ' < "$WORK/reap.jsonl")"
 fi
-if grep -q 'hermes-worker-21' "$WORK/reap.jsonl"; then
-  bad "the reaper touched the LIVE worker's container (hermes-worker-21)"
+# Two separate statements, because they are two separate properties and the old
+# single grep on the bare name conflated them. Asking a live worker whether it is
+# alive is exactly what /status is for; stopping or removing it is the thing that
+# must never happen.
+if grep -qE '"name": "hermes-worker-21", "verb": "(stop|remove)"' "$WORK/reap.jsonl"; then
+  bad "the reaper STOPPED or REMOVED a live worker's container (hermes-worker-21)"
 else
   ok "no stop/remove was aimed at a live worker's container"
+fi
+if grep -q '"name": "hermes-worker-21", "verb": "status"' "$WORK/reap.jsonl"; then
+  ok "it did ASK about that live worker - liveness is read, never assumed"
+else
+  bad "the reaper never asked whether hermes-worker-21 was alive; it is deciding on the clock alone"
 fi
 [ "$(labels_of "$WORK/reap.state.json" 20)" = "priority:2 status:backlog" ] \
   && ok "#20 goes to status:backlog - NOT status:todo, which only a human may set" \
@@ -333,6 +345,151 @@ grep -q 'p4-release' <<<"$(comment_bodies "$WORK/reap.state.json" 20)" \
 [ "$(reap_action "$WORK/reap.out.json" 23)" = "none" ] \
   && ok "#23's heartbeat comment (2 min old) keeps a 210-minute-old claim alive" \
   || bad "#23 was reaped despite a recent heartbeat"
+
+################################################################################
+echo
+echo "ONE SOURCE OF TRUTH  (the agent must run the program this harness tested)"
+################################################################################
+# The dispatch loop exists twice: here at the repo root, where every assertion in
+# this file points, and inside the skill the agent actually loads. Nothing keeps
+# them equal but discipline, and discipline lost - the root copy was edited and
+# verified while the agent went on running the previous version for a whole live
+# run. A harness that tests a file nobody executes is worse than no harness.
+SKILL_COPY="$HERE/hermes-skills/autonomous-ai-agents/orchestrator-dispatch/scripts/p4-dispatch-loop.py"
+if [ ! -f "$SKILL_COPY" ]; then
+  bad "the skill's copy of the dispatch loop is missing: $SKILL_COPY"
+elif cmp -s "$SCRIPT" "$SKILL_COPY"; then
+  ok "the skill's dispatch loop is byte-identical to the one tested here"
+else
+  bad "THE AGENT RUNS A DIFFERENT PROGRAM: $SKILL_COPY differs from $SCRIPT"
+  note "$(diff "$SCRIPT" "$SKILL_COPY" | grep -c '^[<>]') differing lines - run ./install-skills.sh"
+fi
+
+################################################################################
+echo
+echo "RELEASE ON EXIT  (the container is asked, not the clock - TECH-102)"
+echo "  Every claim in this fixture is ONE MINUTE old against --now, so the"
+echo "  45-minute timeout cannot fire. Anything released here is released"
+echo "  because /status said the worker had stopped."
+################################################################################
+# What /status answers, per worker. RecordingSpawner reads this sidecar; a name
+# absent from it is STATUS_UNKNOWN, which is how #75 exercises the fallback.
+cat > "$WORK/exited.jsonl.status.json" <<'JSON'
+{
+  "hermes-worker-70": {"name": "hermes-worker-70", "exists": true,  "running": false, "exit_code": 6},
+  "hermes-worker-71": {"name": "hermes-worker-71", "exists": true,  "running": true,  "exit_code": null},
+  "hermes-worker-72": {"name": "hermes-worker-72", "exists": false, "running": false, "exit_code": null},
+  "hermes-worker-73": {"name": "hermes-worker-73", "exists": false, "running": false, "exit_code": null},
+  "hermes-worker-74": {"name": "hermes-worker-74", "exists": true,  "running": false, "exit_code": 0}
+}
+JSON
+with_timeout 60 python3 "$SCRIPT" reap --source "fixture:$FIX/exited-claim.json" \
+  --fixture-out "$WORK/exited.state.json" --now "$NOW" --timeout 45 \
+  --spawn "record:$WORK/exited.jsonl" --lock "$WORK/exited.lock" \
+  > "$WORK/exited.out.json" 2> "$WORK/exited.err"
+
+# POSITIVE CONTROL FIRST, and here it is the RELEASE that has to happen: a
+# reaper that released nothing would satisfy every "must survive" below.
+[ "$(reap_action "$WORK/exited.out.json" 70)" = "released" ] \
+  && ok "POSITIVE CONTROL: #70's worker exited 6 and its claim is released on a ONE-MINUTE-old claim" \
+  || bad "POSITIVE CONTROL FAILED: #70 was not released ('$(reap_action "$WORK/exited.out.json" 70)') - the 45m timeout is still the only signal"
+[ "$(q "$WORK/exited.out.json" 'next(a.get("reason","") for a in d["reap"] if a["issue"]==70)')" = "worker_exited" ] \
+  && ok "and the recorded reason is worker_exited, not timeout" \
+  || bad "#70 released for the wrong reason: '$(q "$WORK/exited.out.json" 'next(a.get("reason","") for a in d["reap"] if a["issue"]==70)')'"
+[ "$(q "$WORK/exited.out.json" 'next(str(a.get("exit_code")) for a in d["reap"] if a["issue"]==70)')" = "6" ] \
+  && ok "the worker's exit code is carried into the audit trail" \
+  || bad "#70's release does not record the exit code"
+[ "$(labels_of "$WORK/exited.state.json" 70)" = "priority:1 status:backlog" ] \
+  && ok "#70 returns to status:backlog - never status:todo, which only a human may set" \
+  || bad "#70 labels after release: '$(labels_of "$WORK/exited.state.json" 70)'"
+grep -q '"name": "hermes-worker-70", "verb": "remove"' "$WORK/exited.jsonl" \
+  && ok "its container is REMOVED, so the name is free and the next dispatch is not a 409" \
+  || bad "#70's finished container was never removed; a re-dispatch will collide on the name"
+
+[ "$(reap_action "$WORK/exited.out.json" 71)" = "none" ] \
+  && ok "#71 is RUNNING and is left alone - the negative control the release above needs" \
+  || bad "a running worker (#71) was reaped"
+grep -qE '"name": "hermes-worker-71", "verb": "(stop|remove)"' "$WORK/exited.jsonl" \
+  && bad "the running worker's container was stopped or removed" \
+  || ok "and nothing was stopped or removed for it"
+
+[ "$(reap_action "$WORK/exited.out.json" 72)" = "released" ] \
+  && ok "#72's container is gone and the claim outlived the grace period: released" \
+  || bad "#72 was not released although no container exists"
+[ "$(q "$WORK/exited.out.json" 'next(a.get("reason","") for a in d["reap"] if a["issue"]==72)')" = "container_gone" ] \
+  && ok "recorded as container_gone, distinct from an exit and from a timeout" \
+  || bad "#72's release reason is not container_gone"
+
+[ "$(reap_action "$WORK/exited.out.json" 73)" = "none" ] \
+  && ok "#73 was claimed 10s ago and has no container YET: the spawn grace period protects it" \
+  || bad "#73 was reaped inside the spawn grace period - a reaper racing a dispatcher kills newborn workers"
+
+[ "$(reap_action "$WORK/exited.out.json" 74)" = "none" ] \
+  && ok "#74's worker exited 0 but its PR is open: files stay reserved until a human MERGES" \
+  || bad "#74 was released on exit although its pull request is open - a second worker can now edit files an unmerged branch changes"
+
+[ "$(reap_action "$WORK/exited.out.json" 75)" = "none" ] \
+  && ok "#75's liveness is UNKNOWN, so the clock decides, and its claim is fresh: not knowing is not dying" \
+  || bad "#75 was reaped although /status could not answer for it"
+
+################################################################################
+echo
+echo "RE-DISPATCH AFTER A FAILURE  (a finished container must not block its issue)"
+################################################################################
+# #70 is now released and back in status:backlog, and its worker container was
+# removed above. Dispatch against that state: it must be picked up again with no
+# human clearing anything. --limit 9 because #71/#73/#74/#75 are still legitimately
+# held here; with the default 3 the pass has no slots and #70 would be skipped for
+# a reason that has nothing to do with what this suite is testing.
+with_timeout 60 python3 "$SCRIPT" dispatch --source "fixture:$WORK/exited.state.json" \
+  --fixture-out "$WORK/redispatch.state.json" --now "$NOW" --limit 9 --no-reap \
+  --spawn "record:$WORK/redispatch.jsonl" --lock "$WORK/redispatch.lock" \
+  > "$WORK/redispatch.out.json" 2> "$WORK/redispatch.err"
+grep -q '"name": "hermes-worker-70", "verb": "spawn"' "$WORK/redispatch.jsonl" 2>/dev/null \
+  && ok "#70 is dispatched again immediately - no timeout waited out, nothing removed by hand" \
+  || bad "#70 was not re-dispatched after its claim was released: $(cat "$WORK/redispatch.out.json" | tr '\n' ' ' | head -c 300)"
+
+# And the 409 itself: a namesake that is still present but stopped must be
+# cleared and the spawn retried once, rather than failing the dispatch.
+cat > "$WORK/conflict.jsonl.status.json" <<'JSON'
+{
+  "hermes-worker-70": {"name": "hermes-worker-70", "exists": true, "running": false,
+                       "exit_code": 6, "spawn_conflict": true}
+}
+JSON
+with_timeout 60 python3 "$SCRIPT" dispatch --source "fixture:$WORK/exited.state.json" \
+  --fixture-out "$WORK/conflict.state.json" --now "$NOW" --limit 9 --no-reap \
+  --spawn "record:$WORK/conflict.jsonl" --lock "$WORK/conflict.lock" \
+  > "$WORK/conflict.out.json" 2> "$WORK/conflict.err"
+[ "$(claimed "$WORK/conflict.out.json" 70)" = "True" ] \
+  && ok "a 409 from a STOPPED namesake is recovered: it is removed and the spawn retried once" \
+  || bad "#70 could not be dispatched past a 409 on a dead container: $(claim_reason "$WORK/conflict.out.json" 70)"
+if grep -q '"name": "hermes-worker-70", "verb": "remove"' "$WORK/conflict.jsonl" &&
+   [ "$(grep -c '"name": "hermes-worker-70", "verb": "spawn"' "$WORK/conflict.jsonl")" = "2" ]; then
+  ok "exactly one remove and exactly two spawn attempts - it retries once, not in a loop"
+else
+  bad "the 409 recovery is not one-shot: $(tr '\n' ' ' < "$WORK/conflict.jsonl")"
+fi
+
+# The recovery must NOT fire when the namesake is alive. Two workers on one issue
+# is the collision every other rule in this file exists to prevent, and "clear
+# the old container" would be a very direct way to cause it.
+cat > "$WORK/conflict-live.jsonl.status.json" <<'JSON'
+{
+  "hermes-worker-70": {"name": "hermes-worker-70", "exists": true, "running": true,
+                       "exit_code": null, "spawn_conflict": true}
+}
+JSON
+with_timeout 60 python3 "$SCRIPT" dispatch --source "fixture:$WORK/exited.state.json" \
+  --fixture-out "$WORK/conflict-live.state.json" --now "$NOW" --limit 9 --no-reap \
+  --spawn "record:$WORK/conflict-live.jsonl" --lock "$WORK/conflict-live.lock" \
+  > "$WORK/conflict-live.out.json" 2> "$WORK/conflict-live.err"
+[ "$(claimed "$WORK/conflict-live.out.json" 70)" = "False" ] \
+  && ok "a 409 from a RUNNING namesake is refused, not cleared" \
+  || bad "the dispatcher removed a LIVE container to reuse its name"
+grep -q '"name": "hermes-worker-70", "verb": "remove"' "$WORK/conflict-live.jsonl" \
+  && bad "it removed a running worker's container" \
+  || ok "and that live container was never touched"
 
 ################################################################################
 echo

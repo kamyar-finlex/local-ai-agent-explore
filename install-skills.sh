@@ -23,6 +23,37 @@ DEST="${HERMES_DATA:-$HOME/.hermes}/skills"
 [ -d "$SRC" ]  || { echo "no hermes-skills/ directory here" >&2; exit 1; }
 [ -d "$DEST" ] || { echo "agent skills directory not found: $DEST" >&2; exit 1; }
 
+# ---- One source of truth per script -----------------------------------------
+# A skill carries its scripts inside its own directory, and the same programs
+# also live at the repo root, where the harnesses point at them. That is two
+# copies of a 62 KB file kept in step by hand, and it does not stay in step:
+# p4-dispatch-loop.py was edited at the root, verified there, installed from
+# here - and the agent went on running the previous version. The symptom was a
+# reap that reported a reason string the new code cannot produce.
+#
+# So the ROOT file is canonical and this script copies it over the skill's copy
+# before installing, out loud. `verify-dispatch.sh` asserts the same equality,
+# so drift fails a harness run even when nobody installs anything.
+CANONICAL="
+p4-dispatch-loop.py:orchestrator-dispatch
+p3-plan.py:orchestrator-planner
+"
+while IFS=: read -r script skill; do
+  [ -n "$script" ] || continue
+  root="$HERE_DIR/$script"
+  copy="$SRC/autonomous-ai-agents/$skill/scripts/$script"
+  [ -f "$root" ] && [ -f "$copy" ] || continue
+  if cmp -s "$root" "$copy"; then
+    echo "  in sync    $script"
+  else
+    cp "$root" "$copy"
+    echo "  SYNCED     $script  (the skill copy was stale; the root file wins)"
+  fi
+done <<EOF
+$CANONICAL
+EOF
+echo
+
 installed=0
 # Skills are grouped one level deep (category/skill-name/SKILL.md), matching the
 # layout the agent's bundled skills already use.

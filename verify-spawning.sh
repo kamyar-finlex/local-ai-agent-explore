@@ -288,8 +288,108 @@ suite_dispatcher() {
     [ "$(hins "$CTL" '{{.HostConfig.NetworkMode}}')" = "$NET" ] \
       && ok "worker joined $NET (no route out except the two gates)" \
       || bad "worker network is $(hins "$CTL" '{{.HostConfig.NetworkMode}}'), expected $NET"
+
+    # ---- /status: the one fact the reaper needs, and nothing more (TECH-102) --
+    # Read through the lifecycle of THIS container, because the three answers
+    # only mean anything in contrast: a verb that always said "not running"
+    # would satisfy the exited and gone cases and be useless.
+    echo
+    echo "  STATUS - running"
+    disp_call POST "/status" "{\"name\":\"$CTL\"}"
+    STAT_RUNNING="$BODY"
+    [ "$CODE" = "200" ] && ok "status answers for a labelled worker (200)" \
+                        || bad "status returned $CODE for our own worker, expected 200"
+    jfield() { printf '%s' "$1" | python3 -c 'import json,sys
+try: print(json.loads(sys.stdin.read()).get(sys.argv[1]))
+except Exception: print("PARSE-ERROR")' "$2"; }
+    [ "$(jfield "$STAT_RUNNING" running)" = "True" ] \
+      && ok "it reports the running worker as running" \
+      || bad "status says running=$(jfield "$STAT_RUNNING" running) for a container Docker calls running"
+    [ "$(jfield "$STAT_RUNNING" exists)" = "True" ] \
+      && ok "and exists=true" || bad "status says exists=$(jfield "$STAT_RUNNING" exists)"
+    [ "$(jfield "$STAT_RUNNING" exit_code)" = "None" ] \
+      && ok "exit_code is null while it runs - a bare 0 would read as a clean exit" \
+      || bad "a running container reported exit_code=$(jfield "$STAT_RUNNING" exit_code)"
+
+    # THE check this verb had to earn. An off-the-shelf socket proxy's
+    # GET /containers/{id}/json returns the injected credential in the body;
+    # that is one of the nine checks it failed. The response must be four
+    # fields, by name, and must contain no others.
+    KEYS=$(printf '%s' "$STAT_RUNNING" | python3 -c 'import json,sys
+try: print(",".join(sorted(json.loads(sys.stdin.read()))))
+except Exception: print("PARSE-ERROR")')
+    [ "$KEYS" = "exists,exit_code,name,running" ] \
+      && ok "the response is exactly {exists, exit_code, name, running} - no other field" \
+      || bad "status response carries unexpected fields: $KEYS"
+    if printf '%s' "$STAT_RUNNING" | grep -qiE '"(env|mounts|config|hostconfig|image|networksettings|args|path)"'; then
+      bad "STATUS LEAKS CONTAINER DETAIL - env/mounts/config/image are visible"
+    else
+      ok "no env, mounts, config, image or network detail in the body"
+    fi
+    # And the concrete version of the same statement: the actual injected
+    # credential, byte for byte. Never printed, only searched for.
+    INJ_TOK=$(denv "$CTL" GITHUB_TOKEN)
+    if [ -n "$INJ_TOK" ]; then
+      printf '%s' "$STAT_RUNNING" | grep -qF -- "$INJ_TOK" \
+        && bad "THE INJECTED CREDENTIAL IS READABLE THROUGH /status - it is a token oracle" \
+        || ok "the worker's injected GITHUB_TOKEN does not appear in the status body"
+    else
+      note "no GITHUB_TOKEN injected into this worker, so the token-oracle check is vacuous here"
+    fi
+
+    echo
+    echo "  STATUS - cannot enumerate, cannot be aimed elsewhere"
+    disp_call POST "/status" '{}'
+    [ "$CODE" = "400" ] && ok "no name at all is refused (400) - there is no 'list everything' form" \
+                        || bad "status with no name returned $CODE, expected 400"
+    disp_call POST "/status" '{"name":"*"}'
+    [ "$CODE" = "400" ] && ok "a wildcard is refused (400)" || bad "status '*' returned $CODE, expected 400"
+    disp_call POST "/status" '{"name":""}'
+    [ "$CODE" = "400" ] && ok "an empty name is refused (400)" || bad "status '' returned $CODE, expected 400"
+    disp_call POST "/status" "{\"name\":[\"$CTL\"]}"
+    [ "$CODE" = "400" ] && ok "a LIST of names is refused (400) - one question, one container" \
+                        || bad "status with a list returned $CODE, expected 400"
+    disp_call POST "/status" '{"name":"../../containers/json"}'
+    [ "$CODE" = "400" ] && ok "a path-traversal name is refused (400)" \
+                        || bad "status '../../containers/json' returned $CODE, expected 400"
+    disp_call POST "/status" "{\"name\":\"$BYSTANDER\"}"
+    [ "$CODE" = "403" ] && ok "refused to describe the unlabelled $BYSTANDER (403), same guard as stop/remove" \
+                        || bad "status on $BYSTANDER returned $CODE, expected 403"
+    disp_call POST "/status" "{\"name\":\"$AGENT_NAME\"}"
+    if [ "$CODE" = "403" ]; then
+      ok "refused to describe the real '$AGENT_NAME' container (403)"
+      printf '%s' "$BODY" | grep -qiE '"(env|mounts|state|config)"' \
+        && bad "the 403 for $AGENT_NAME still leaked container detail" \
+        || ok "and the refusal itself discloses nothing about it"
+    else
+      bad "status on $AGENT_NAME returned $CODE, expected 403"
+    fi
+    disp_call POST "/status" "{\"name\":\"$CTL\"}" "__NONE__"
+    [ "$CODE" = "401" ] && ok "unauthenticated status is rejected (401)" \
+                        || bad "status without a token returned $CODE, expected 401"
+    disp_call GET "/status" ""
+    [ "$CODE" = "404" ] && ok "there is no GET /status - one authentication chokepoint, not two" \
+                        || bad "GET /status returned $CODE, expected 404"
+
+    echo
+    echo "  STATUS - exited, then gone"
     disp_call POST "/stop" "{\"name\":\"$CTL\"}";   [ "$CODE" = "200" ] && ok "stop worker (200)"   || bad "stop returned $CODE"
+    disp_call POST "/status" "{\"name\":\"$CTL\"}"
+    STAT_EXITED="$BODY"
+    [ "$(jfield "$STAT_EXITED" running)" = "False" ] && [ "$(jfield "$STAT_EXITED" exists)" = "True" ] \
+      && ok "a stopped worker reads exists=true running=false - the case that used to cost 45 minutes" \
+      || bad "a stopped worker reads exists=$(jfield "$STAT_EXITED" exists) running=$(jfield "$STAT_EXITED" running)"
+    [ "$(jfield "$STAT_EXITED" exit_code)" != "None" ] \
+      && ok "and its exit code is available ($(jfield "$STAT_EXITED" exit_code))" \
+      || bad "no exit code for a stopped container"
     disp_call POST "/remove" "{\"name\":\"$CTL\"}"; [ "$CODE" = "200" ] && ok "remove worker (200)" || bad "remove returned $CODE"
+    disp_call POST "/status" "{\"name\":\"$CTL\"}"
+    STAT_GONE="$BODY"
+    if [ "$CODE" = "200" ] && [ "$(jfield "$STAT_GONE" exists)" = "False" ]; then
+      ok "a removed worker is a 200 with exists=false - 'gone' is an ANSWER, not an error"
+    else
+      bad "status after remove returned $CODE / exists=$(jfield "$STAT_GONE" exists), expected 200/false"
+    fi
   else
     bad "POSITIVE CONTROL FAILED: spawn returned $CODE ($BODY) - probe broken, negatives void"; return
   fi
@@ -657,6 +757,130 @@ suite_env_injection() {
   fi
 
   p7_down
+  trap - EXIT INT TERM
+
+  suite_status_mutation
+}
+
+########################################################################################
+# MUTATION CONTROL for /status - widen the response and require the checks to notice
+########################################################################################
+# The /status assertions above are all of the form "this field is NOT in the
+# body", and a verb that returned an empty object would satisfy every one of
+# them. So: run a dispatcher whose /status hands back the whole inspect body -
+# the exact thing an off-the-shelf socket proxy does, and the exact thing this
+# interface exists to avoid - and require the checks to go red against it.
+#
+# It runs on its OWN scratch dispatcher, from a MUTATED COPY of p1-dispatcher.py
+# in a temp directory. The committed file is never edited, so an interrupted run
+# cannot leave a widened status verb behind on disk.
+P8DISP=p8-mutant-dispatcher
+P8PREFIX=p8-w-
+P8LABEL=p8-scratch-worker
+
+p8_down() {
+  docker rm -f $(docker ps -aq --filter "name=^/${P8PREFIX}" 2>/dev/null) >/dev/null 2>&1
+  docker rm -f "$P8DISP" >/dev/null 2>&1
+  [ -n "${P8DIR:-}" ] && rm -rf "$P8DIR"
+}
+
+p8_call() {  # METHOD PATH [BODY]
+  local m=$1 p=$2 b=${3:-} args=()
+  args=(-s -m 30 -w $'\nP1CODE:%{http_code}' -X "$m" -H "Authorization: Bearer $P8TOKEN")
+  [ -n "$b" ] && args+=(-H 'Content-Type: application/json' -d "$b")
+  _run "${args[@]}" "http://$P8DISP:2375$p"
+}
+
+suite_status_mutation() {
+  echo
+  echo "MUTATION CONTROL  (/status widened to return the inspect body must be CAUGHT)"
+  trap p8_down EXIT INT TERM
+  p8_down
+  P8DIR="$(mktemp -d "${TMPDIR:-/tmp}/p8-mutant.XXXXXX")"
+  P8TOKEN="p8-$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+
+  # The mutation: answer with everything Docker knows, and neuter the guard that
+  # is supposed to stop exactly that.
+  python3 - "$HERE_DIR/p1-dispatcher.py" "$P8DIR/dispatcher.py" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+needle = """    body = {
+        "name": name,
+        "exists": True,
+        "running": running,
+        "exit_code": None if running else state.get("ExitCode"),
+    }"""
+if needle not in text:
+    sys.exit("MUTATION-TARGET-MISSING: the status response body has changed shape")
+text = text.replace(needle, """    body = dict(info)
+    body.update({"name": name, "exists": True, "running": running,
+                 "exit_code": None if running else state.get("ExitCode")})""")
+# ...and disable the drift guard, so the mutation is not caught by the code
+# itself. What is under test is the HARNESS.
+text = text.replace('    if set(body) != set(STATUS_FIELDS):',
+                    '    if False:')
+open(dst, "w").write(text)
+PY
+  if [ $? -ne 0 ] || [ ! -s "$P8DIR/dispatcher.py" ]; then
+    bad "could not build the mutant - p1-dispatcher.py's status body has changed shape; update the mutation"
+    p8_down; trap - EXIT INT TERM; return
+  fi
+  ok "mutant built in a temp dir (the committed p1-dispatcher.py is untouched)"
+
+  export GITHUB_TOKEN="${TARGET_REPO_TOKEN:-}"
+  docker run -d --name "$P8DISP" --network "$NET" \
+    -v "$P8DIR/dispatcher.py":/app/dispatcher.py:ro \
+    -v /var/run/docker.sock:/var/run/docker.sock \
+    -e DISPATCH_TOKEN="$P8TOKEN" \
+    -e WORKER_IMAGE="$WORKER_IMAGE" \
+    -e WORKER_LABEL_KEY=role -e WORKER_LABEL_VALUE="$P8LABEL" \
+    -e WORKER_NETWORK="$NET" -e WORKER_NAME_PREFIX="$P8PREFIX" \
+    -e WORKER_MEMORY=268435456 \
+    -e WORKER_WORK_PATH=/work -e WORKER_WORK_SIZE=64m \
+    -e WORKER_ENV_ALLOWLIST="GITHUB_TOKEN" -e GITHUB_TOKEN \
+    -e PYTHONUNBUFFERED=1 -e PYTHONDONTWRITEBYTECODE=1 \
+    --read-only --tmpfs /tmp:size=8m \
+    --security-opt no-new-privileges --cap-drop ALL \
+    -m 96m --pids-limit 64 --restart no \
+    python:3-alpine python /app/dispatcher.py >/dev/null 2>&1
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    p8_call GET "/healthz"; [ "$CODE" = "200" ] && break; sleep 1
+  done
+  if [ "$CODE" != "200" ]; then
+    bad "the mutant dispatcher did not come up ($CODE) - the mutation control proves nothing"
+    note "$(docker logs "$P8DISP" 2>&1 | tail -5 | scrub | tr '\n' ' ')"
+    p8_down; trap - EXIT INT TERM; return
+  fi
+
+  P8W="${P8PREFIX}probe"
+  p8_call POST "/spawn" "{\"name\":\"$P8W\",\"cmd\":[\"sleep\",\"60\"]}"
+  if [ "$CODE" != "201" ]; then
+    bad "the mutant could not spawn a probe worker ($CODE) - the mutation control proves nothing"
+    p8_down; trap - EXIT INT TERM; return
+  fi
+  p8_call POST "/status" "{\"name\":\"$P8W\"}"
+  MUT_BODY="$BODY"
+
+  # Now run the SAME three assertions the real suite makes, and require each to
+  # come out the other way. A mutation nobody's check can see is a check nobody
+  # needs.
+  MUT_KEYS=$(printf '%s' "$MUT_BODY" | python3 -c 'import json,sys
+try: print(",".join(sorted(json.loads(sys.stdin.read()))))
+except Exception: print("PARSE-ERROR")')
+  [ "$MUT_KEYS" = "exists,exit_code,name,running" ] \
+    && bad "the widened response still looks like four fields - the field check cannot see this mutation" \
+    || ok "the field-set check goes RED against the mutant (it sees $(printf '%s' "$MUT_KEYS" | tr ',' ' ' | wc -w | tr -d ' ') keys)"
+  printf '%s' "$MUT_BODY" | grep -qiE '"(env|mounts|config|hostconfig|image|networksettings|args|path)"' \
+    && ok "the env/mounts/config check goes RED against the mutant" \
+    || bad "the widened response exposed no recognisable field - the leak check cannot see this mutation"
+  if [ -n "${TARGET_REPO_TOKEN:-}" ]; then
+    printf '%s' "$MUT_BODY" | grep -qF -- "$TARGET_REPO_TOKEN" \
+      && ok "and the token-oracle check goes RED: the credential IS readable through the mutant" \
+      || bad "the mutant leaked the config but not the credential - the token check is untested by it"
+  fi
+
+  p8_down
   trap - EXIT INT TERM
 }
 
