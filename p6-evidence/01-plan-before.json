@@ -1,0 +1,57 @@
+{
+  "concurrency": {
+    "held": 0,
+    "held_issues": [],
+    "limit": 3,
+    "slots": 3
+  },
+  "cycles": [],
+  "defects": [],
+  "dispatch": [
+    {
+      "acceptance": "pytest -q tests/test_interests.py",
+      "files": [
+        "app/interests.py",
+        "tests/test_interests.py"
+      ],
+      "issue": 26,
+      "priority": 1
+    },
+    {
+      "acceptance": "pytest -q tests/test_store.py",
+      "files": [
+        "app/store.py",
+        "tests/test_store.py"
+      ],
+      "issue": 27,
+      "priority": 1
+    },
+    {
+      "acceptance": "pytest -q tests/test_summary.py",
+      "files": [
+        "app/summary.py",
+        "tests/test_summary.py"
+      ],
+      "issue": 28,
+      "priority": 1
+    }
+  ],
+  "fatal": null,
+  "skipped": [
+    {
+      "detail": "concurrency limit 3 reached",
+      "issue": 22,
+      "reason": "no_slots"
+    },
+    {
+      "detail": "#26 on app/interests.py",
+      "issue": 29,
+      "reason": "file_conflict"
+    },
+    {
+      "detail": "a specification to plan from, not work to do",
+      "issue": 2,
+      "reason": "spec_issue"
+    }
+  ]
+}

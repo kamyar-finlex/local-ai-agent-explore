@@ -1,0 +1,69 @@
+{
+  "_comment": [
+    "collision.json with ONE character sequence changed: #62 declares",
+    "src/second.py instead of src/shared.py. Everything else - the issues, the",
+    "labels, the priorities, the acceptance commands, the order - is identical.",
+    "",
+    "All three must dispatch here. That is what pins the refusal in collision.json",
+    "to the shared path rather than to some other property of #62, and it is why",
+    "the two files are kept deliberately near-identical rather than tidied into",
+    "one parameterised fixture."
+  ],
+  "repo": "example/target",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 60,
+      "title": "Unrelated ticket (positive control)",
+      "state": "open",
+      "labels": ["status:backlog", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Touches nothing the other two touch, so it must be dispatched.",
+        "",
+        "## Files touched",
+        "- src/alone.py",
+        "- tests/test_alone.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_alone.py"
+      ]
+    },
+    {
+      "number": 61,
+      "title": "First claimant of src/shared.py",
+      "state": "open",
+      "labels": ["status:backlog", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Wins the file, on (priority, issue number).",
+        "",
+        "## Files touched",
+        "- src/shared.py",
+        "- tests/test_first.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_first.py"
+      ]
+    },
+    {
+      "number": 62,
+      "title": "Second claimant of src/shared.py",
+      "state": "open",
+      "labels": ["status:backlog", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Declares its own file here, so nothing stands in its way.",
+        "",
+        "## Files touched",
+        "- src/second.py",
+        "- tests/test_second.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_second.py"
+      ]
+    }
+  ],
+  "comments": {},
+  "pulls": []
+}

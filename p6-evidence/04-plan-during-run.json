@@ -1,0 +1,48 @@
+{
+  "concurrency": {
+    "held": 3,
+    "held_issues": [
+      26,
+      27,
+      28
+    ],
+    "limit": 3,
+    "slots": 0
+  },
+  "cycles": [],
+  "defects": [],
+  "dispatch": [],
+  "fatal": null,
+  "skipped": [
+    {
+      "detail": "a worker holds this ticket",
+      "issue": 26,
+      "reason": "already_claimed"
+    },
+    {
+      "detail": "a worker holds this ticket",
+      "issue": 27,
+      "reason": "already_claimed"
+    },
+    {
+      "detail": "a worker holds this ticket",
+      "issue": 28,
+      "reason": "already_claimed"
+    },
+    {
+      "detail": "concurrency limit 3 reached",
+      "issue": 22,
+      "reason": "no_slots"
+    },
+    {
+      "detail": "#26 on app/interests.py",
+      "issue": 29,
+      "reason": "file_conflict"
+    },
+    {
+      "detail": "a specification to plan from, not work to do",
+      "issue": 2,
+      "reason": "spec_issue"
+    }
+  ]
+}

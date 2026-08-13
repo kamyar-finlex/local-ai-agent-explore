@@ -1,0 +1,310 @@
+# docker ps sampled once a second, by a process that knows nothing about the dispatcher.
+# columns: UTC time <tab> number of running role=hermes-worker containers <tab> their names
+# the trailing '.3N' is a literal: BSD date has no %3N, so there is no sub-second precision here.
+# sub-second precision comes from docker inspect instead - see 05-container-timestamps.txt.
+08:49:34.3N	0	
+08:49:35.3N	0	
+08:49:36.3N	0	
+08:49:37.3N	0	
+08:49:38.3N	0	
+08:49:39.3N	0	
+08:49:40.3N	0	
+08:49:41.3N	0	
+08:49:42.3N	0	
+08:49:43.3N	0	
+08:49:44.3N	0	
+08:49:45.3N	0	
+08:49:47.3N	0	
+08:49:48.3N	0	
+08:49:49.3N	0	
+08:49:50.3N	0	
+08:49:51.3N	0	
+08:49:52.3N	0	
+08:49:54.3N	0	
+08:49:55.3N	0	
+08:49:56.3N	0	
+08:49:57.3N	0	
+08:49:58.3N	0	
+08:49:59.3N	0	
+08:50:00.3N	0	
+08:50:02.3N	0	
+08:50:03.3N	0	
+08:50:04.3N	0	
+08:50:05.3N	0	
+08:50:06.3N	0	
+08:50:07.3N	0	
+08:50:08.3N	0	
+08:50:09.3N	0	
+08:50:10.3N	0	
+08:50:11.3N	0	
+08:50:12.3N	0	
+08:50:13.3N	0	
+08:50:14.3N	0	
+08:50:15.3N	0	
+08:50:17.3N	0	
+08:50:18.3N	0	
+08:50:19.3N	0	
+08:50:20.3N	0	
+08:50:21.3N	0	
+08:50:22.3N	0	
+08:50:23.3N	0	
+08:50:24.3N	0	
+08:50:25.3N	0	
+08:50:26.3N	0	
+08:50:27.3N	0	
+08:50:28.3N	0	
+08:50:29.3N	0	
+08:50:31.3N	0	
+08:50:32.3N	0	
+08:50:33.3N	0	
+08:50:34.3N	0	
+08:50:35.3N	0	
+08:50:36.3N	0	
+08:50:37.3N	0	
+08:50:38.3N	0	
+08:50:39.3N	0	
+08:50:40.3N	0	
+08:50:41.3N	0	
+08:50:42.3N	0	
+08:50:44.3N	0	
+08:50:45.3N	0	
+08:50:46.3N	0	
+08:50:47.3N	0	
+08:50:48.3N	0	
+08:50:49.3N	0	
+08:50:50.3N	0	
+08:50:51.3N	1	hermes-worker-26 
+08:50:52.3N	1	hermes-worker-26 
+08:50:54.3N	1	hermes-worker-26 
+08:50:55.3N	2	hermes-worker-26 hermes-worker-27 
+08:50:56.3N	2	hermes-worker-26 hermes-worker-27 
+08:50:57.3N	2	hermes-worker-26 hermes-worker-27 
+08:50:58.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:50:59.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:00.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:01.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:02.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:03.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:04.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:06.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:07.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:08.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:09.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:10.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:11.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:12.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:13.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:14.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:15.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:16.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:18.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:19.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:20.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:21.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:22.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:23.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:24.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:25.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:26.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:27.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:28.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:29.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:31.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:32.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:33.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:34.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:35.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:36.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:37.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:38.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:39.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:40.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:41.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:42.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:43.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:45.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:46.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:47.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:48.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:49.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:50.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:51.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:52.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:53.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:54.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:55.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:56.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:57.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:51:59.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:00.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:01.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:02.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:03.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:04.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:05.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:06.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:07.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:08.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:09.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:11.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:12.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:13.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:14.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:15.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:16.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:17.3N	3	hermes-worker-26 hermes-worker-27 hermes-worker-28 
+08:52:18.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:19.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:20.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:21.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:22.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:24.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:25.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:26.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:27.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:28.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:29.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:30.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:31.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:32.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:33.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:34.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:36.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:37.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:38.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:39.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:40.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:41.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:42.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:43.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:44.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:45.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:46.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:47.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:49.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:50.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:51.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:52.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:53.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:54.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:55.3N	2	hermes-worker-26 hermes-worker-28 
+08:52:56.3N	1	hermes-worker-28 
+08:52:57.3N	1	hermes-worker-28 
+08:52:59.3N	1	hermes-worker-28 
+08:53:00.3N	1	hermes-worker-28 
+08:53:01.3N	1	hermes-worker-28 
+08:53:02.3N	1	hermes-worker-28 
+08:53:03.3N	1	hermes-worker-28 
+08:53:04.3N	1	hermes-worker-28 
+08:53:05.3N	1	hermes-worker-28 
+08:53:06.3N	1	hermes-worker-28 
+08:53:07.3N	1	hermes-worker-28 
+08:53:08.3N	1	hermes-worker-28 
+08:53:09.3N	1	hermes-worker-28 
+08:53:11.3N	1	hermes-worker-28 
+08:53:12.3N	0	
+08:53:13.3N	0	
+08:53:15.3N	0	
+08:53:16.3N	0	
+08:53:17.3N	0	
+08:53:18.3N	0	
+08:53:19.3N	0	
+08:53:20.3N	0	
+08:53:21.3N	0	
+08:53:22.3N	0	
+08:53:23.3N	0	
+08:53:25.3N	0	
+08:53:26.3N	0	
+08:53:27.3N	0	
+08:53:28.3N	0	
+08:53:29.3N	0	
+08:53:30.3N	0	
+08:53:31.3N	0	
+08:53:32.3N	0	
+08:53:33.3N	0	
+08:53:34.3N	0	
+08:53:35.3N	0	
+08:53:36.3N	0	
+08:53:37.3N	0	
+08:53:39.3N	0	
+08:53:40.3N	0	
+08:53:41.3N	0	
+08:53:42.3N	0	
+08:53:43.3N	0	
+08:53:44.3N	0	
+08:53:45.3N	0	
+08:53:46.3N	0	
+08:53:47.3N	0	
+08:53:48.3N	0	
+08:53:49.3N	0	
+08:53:50.3N	0	
+08:53:52.3N	0	
+08:53:53.3N	0	
+08:53:54.3N	0	
+08:53:55.3N	0	
+08:53:56.3N	0	
+08:53:57.3N	0	
+08:53:58.3N	0	
+08:53:59.3N	0	
+08:54:00.3N	0	
+08:54:01.3N	0	
+08:54:02.3N	0	
+08:54:03.3N	0	
+08:54:04.3N	0	
+08:54:06.3N	0	
+08:54:07.3N	0	
+08:54:08.3N	0	
+08:54:09.3N	0	
+08:54:10.3N	0	
+08:54:11.3N	0	
+08:54:12.3N	0	
+08:54:13.3N	0	
+08:54:14.3N	0	
+08:54:15.3N	0	
+08:54:16.3N	0	
+08:54:18.3N	0	
+08:54:19.3N	0	
+08:54:20.3N	0	
+08:54:21.3N	0	
+08:54:22.3N	0	
+08:54:23.3N	0	
+08:54:24.3N	0	
+08:54:25.3N	0	
+08:54:26.3N	0	
+08:54:27.3N	0	
+08:54:28.3N	0	
+08:54:29.3N	0	
+08:54:31.3N	0	
+08:54:32.3N	0	
+08:54:33.3N	0	
+08:54:34.3N	0	
+08:54:35.3N	0	
+08:54:36.3N	0	
+08:54:37.3N	0	
+08:54:38.3N	0	
+08:54:39.3N	0	
+08:54:40.3N	0	
+08:54:41.3N	0	
+08:54:42.3N	0	
+08:54:44.3N	0	
+08:54:45.3N	0	
+08:54:46.3N	0	
+08:54:47.3N	0	
+08:54:48.3N	0	
+08:54:49.3N	0	
+08:54:50.3N	0	
+08:54:51.3N	0	
+08:54:52.3N	0	
+08:54:53.3N	0	
+08:54:54.3N	0	
+08:54:55.3N	0	
+08:54:57.3N	0	
+08:54:58.3N	0	
+08:54:59.3N	0	
+08:55:00.3N	0	
+08:55:01.3N	0	
+08:55:02.3N	0	
+08:55:03.3N	0	
+08:55:04.3N	0	
+08:55:05.3N	0	
+08:55:06.3N	0	

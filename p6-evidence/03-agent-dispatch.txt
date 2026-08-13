@@ -1,0 +1,14 @@
+DISPATCH PROMPT SENT 08:49:43 UTC
+✅ Dispatched ready tickets
+
+- Issue #26 ➜ `hermes-worker-26`
+- Issue #27 ➜ `hermes-worker-27`
+- Issue #28 ➜ `hermes-worker-28`
+
+Skipped (not dispatched because not ready):
+
+- #22 – concurrency limit reached
+- #29 – file conflict with #26 (`app/interests.py`)
+- #2  – specification issue
+
+No other tickets were eligible. The dispatch loop has flagged the claims and relabeled each ticket to `status:in-progress`. You can monitor worker progress or check the GitHub issue state for updates.

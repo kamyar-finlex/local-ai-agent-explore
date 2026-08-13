@@ -1,0 +1,74 @@
+{
+  "_comment": [
+    "TECH-105's negative control, in fixture form. #61 and #62 are identical in",
+    "every respect that the scheduler reads - both open, both unblocked, both",
+    "with a parseable acceptance command, same priority - except that they both",
+    "declare src/shared.py. Exactly one of them may be dispatched.",
+    "",
+    "#60 is the positive control and it matters more than the pair: a dispatcher",
+    "that dispatches NOTHING satisfies 'the colliding ticket was refused', so the",
+    "suite has to prove that work genuinely flows through the same pass.",
+    "",
+    "disjoint.json is this file with ONE path changed. If the refusal here is",
+    "caused by anything other than the shared path, that file fails too.",
+    "",
+    "Nothing here is real: the repo, the paths and the commands are invented."
+  ],
+  "repo": "example/target",
+  "default_branch": "main",
+  "issues": [
+    {
+      "number": 60,
+      "title": "Unrelated ticket (positive control)",
+      "state": "open",
+      "labels": ["status:backlog", "priority:1"],
+      "body_lines": [
+        "## Goal",
+        "Touches nothing the other two touch, so it must be dispatched.",
+        "",
+        "## Files touched",
+        "- src/alone.py",
+        "- tests/test_alone.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_alone.py"
+      ]
+    },
+    {
+      "number": 61,
+      "title": "First claimant of src/shared.py",
+      "state": "open",
+      "labels": ["status:backlog", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Wins the file, on (priority, issue number).",
+        "",
+        "## Files touched",
+        "- src/shared.py",
+        "- tests/test_first.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_first.py"
+      ]
+    },
+    {
+      "number": 62,
+      "title": "Second claimant of src/shared.py",
+      "state": "open",
+      "labels": ["status:backlog", "priority:2"],
+      "body_lines": [
+        "## Goal",
+        "Must be refused: dispatching it would put two workers on one file.",
+        "",
+        "## Files touched",
+        "- src/shared.py",
+        "- tests/test_second.py",
+        "",
+        "## Acceptance criteria",
+        "pytest -q tests/test_second.py"
+      ]
+    }
+  ],
+  "comments": {},
+  "pulls": []
+}

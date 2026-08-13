@@ -352,6 +352,38 @@ force-pushes.
 > that breaks the scope check and proves the harness goes red, and an honest list
 > of what will still go wrong on a first real run
 
+## Doing three at once
+
+The point of all of the above. **One prompt produced three worker containers that
+were alive together for 80.2 seconds**, on three branches from one commit, and
+each pull request's diff was exactly the files its ticket declared.
+
+The standard applied is intersecting `docker inspect` timestamps, because the
+same claim was made twice earlier in this project on weaker evidence and was
+false both times — three containers had run eighteen and fifty-seven minutes
+apart, from three separate prompts.
+
+What was missing before was never scheduling code: it was **three unblocked,
+file-disjoint tickets existing at the same moment**. The width of a parallel run
+is decided when the plan is written. A planner that chains everything through
+`Blocked-by` builds a system that can run three workers and never does.
+
+The other half is the refusal. A fourth ticket declaring a file one of the three
+had in flight was skipped `file_conflict` naming `#26 on app/interests.py`, on
+the live repository, mid-run — a check arbitrating a real race rather than a
+fixture.
+
+```bash
+./verify-parallel.sh; echo "exit=$?"    # RESULT: 24 passed, 0 failed / exit=0
+./verify-parallel.sh mutate             # + disable path_conflict, require RED
+./verify-parallel.sh live               # + re-query the pull requests from GitHub
+```
+
+> ### → **[PARALLEL-RUN.md](PARALLEL-RUN.md)** — the timestamps, the second
+> independent witness, the three-way merge, the structural isolation assertions,
+> the collision refusal on the live repository and on fixtures, and what this
+> still does not prove
+
 ## Files
 
 | File | Purpose |
@@ -395,6 +427,15 @@ force-pushes.
 | `p5-fixtures/repo/` | The fixture target project a worker is pointed at — no domain, on purpose |
 | `p5-fixtures/issues.json` | Fixture GitHub state: one conforming ticket, nine unusable ones |
 | `p5-fixtures/model/replies.json` | Sixteen canned scenarios: good, wrong-path, prose, dead endpoint, weakening, leaking |
+| `P4-DISPATCH.md` | The dispatch loop: readiness as arithmetic, claiming, reaping, validation |
+| `p4-dispatch-loop.py` | The loop itself: `plan` / `dispatch` / `reap` / `validate`, stdlib only |
+| `hermes-skills/.../orchestrator-dispatch/` | The dispatch skill and its copy of that script |
+| `verify-dispatch.sh` | Dispatch verification: 67 checks against fixtures, plus a live `spawn` mode |
+| `p4-fixtures/*.json` | The repository states the scheduler is tested against |
+| `PARALLEL-RUN.md` | The three-worker parallel run: evidence, method, and what it does not prove |
+| `verify-parallel.sh` | Parallel-run verification: 24 checks, `live` re-query, `mutate` control |
+| `p6-fixtures/` | Two near-identical fixtures differing by one declared path |
+| `p6-evidence/` | Raw capture from the run: timestamps, `docker ps` sample, diffs, logs |
 
 ## Notes
 

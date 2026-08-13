@@ -1,0 +1,119 @@
+[
+  {
+    "name": "hermes-worker-26",
+    "id": "1480815fd6f3",
+    "image": "hermes-worker:latest",
+    "labels": {
+      "com.docker.compose.project": "hermes-stack",
+      "com.docker.compose.service": "worker-image",
+      "com.docker.compose.version": "5.1.1",
+      "managed-by": "p1-dispatcher",
+      "role": "hermes-worker"
+    },
+    "started_at": "2026-08-13T08:50:50.172320885Z",
+    "finished_at": "2026-08-13T08:52:55.790998429Z",
+    "exit_code": 0,
+    "oom_killed": false,
+    "binds": [],
+    "mounts": [],
+    "tmpfs": {
+      "/tmp": "size=8m",
+      "/work": "size=384m,mode=1777,exec"
+    },
+    "network_mode": "hermes-isolated",
+    "networks": [
+      "hermes-isolated"
+    ],
+    "ipc_mode": "private",
+    "pid_mode": "",
+    "privileged": false,
+    "readonly_rootfs": true,
+    "cap_drop": [
+      "ALL"
+    ],
+    "security_opt": [
+      "no-new-privileges"
+    ],
+    "memory": 536870912,
+    "pids_limit": 128,
+    "cmd_argv0": "sh"
+  },
+  {
+    "name": "hermes-worker-27",
+    "id": "d7dfffe0fba8",
+    "image": "hermes-worker:latest",
+    "labels": {
+      "com.docker.compose.project": "hermes-stack",
+      "com.docker.compose.service": "worker-image",
+      "com.docker.compose.version": "5.1.1",
+      "managed-by": "p1-dispatcher",
+      "role": "hermes-worker"
+    },
+    "started_at": "2026-08-13T08:50:53.937218095Z",
+    "finished_at": "2026-08-13T08:52:17.605256134Z",
+    "exit_code": 0,
+    "oom_killed": false,
+    "binds": [],
+    "mounts": [],
+    "tmpfs": {
+      "/tmp": "size=8m",
+      "/work": "size=384m,mode=1777,exec"
+    },
+    "network_mode": "hermes-isolated",
+    "networks": [
+      "hermes-isolated"
+    ],
+    "ipc_mode": "private",
+    "pid_mode": "",
+    "privileged": false,
+    "readonly_rootfs": true,
+    "cap_drop": [
+      "ALL"
+    ],
+    "security_opt": [
+      "no-new-privileges"
+    ],
+    "memory": 536870912,
+    "pids_limit": 128,
+    "cmd_argv0": "sh"
+  },
+  {
+    "name": "hermes-worker-28",
+    "id": "ac826e7809af",
+    "image": "hermes-worker:latest",
+    "labels": {
+      "com.docker.compose.project": "hermes-stack",
+      "com.docker.compose.service": "worker-image",
+      "com.docker.compose.version": "5.1.1",
+      "managed-by": "p1-dispatcher",
+      "role": "hermes-worker"
+    },
+    "started_at": "2026-08-13T08:50:57.382096763Z",
+    "finished_at": "2026-08-13T08:53:11.875311506Z",
+    "exit_code": 0,
+    "oom_killed": false,
+    "binds": [],
+    "mounts": [],
+    "tmpfs": {
+      "/tmp": "size=8m",
+      "/work": "size=384m,mode=1777,exec"
+    },
+    "network_mode": "hermes-isolated",
+    "networks": [
+      "hermes-isolated"
+    ],
+    "ipc_mode": "private",
+    "pid_mode": "",
+    "privileged": false,
+    "readonly_rootfs": true,
+    "cap_drop": [
+      "ALL"
+    ],
+    "security_opt": [
+      "no-new-privileges"
+    ],
+    "memory": 536870912,
+    "pids_limit": 128,
+    "cmd_argv0": "sh"
+  }
+]

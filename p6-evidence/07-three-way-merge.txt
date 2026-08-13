@@ -1,0 +1,21 @@
+# Three-way merge of the three parallel branches, then the full suite.
+# Run on 2026-08-13T08:55:39Z against origin/main ffa0611.
+
+$ git merge origin/issue-26... origin/issue-27... origin/issue-28...
+merged issue-26-7-1-normalise-visitor-interest-t: no conflict
+merged issue-27-7-2-in-memory-plan-store-reopena: no conflict
+merged issue-28-7-3-budget-verdict-for-a-finishe: no conflict
+
+$ git diff --name-status origin/main..HEAD
+A	app/interests.py
+A	app/store.py
+A	app/summary.py
+A	tests/test_interests.py
+A	tests/test_store.py
+A	tests/test_summary.py
+
+$ pytest -q   # on main, before the three branches
+16 passed
+
+$ pytest -q   # on the three-way merge
+34 passed, 2 warnings in 0.26s

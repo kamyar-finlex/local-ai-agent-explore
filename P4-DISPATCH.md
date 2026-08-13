@@ -8,6 +8,11 @@ and it contains no model, on purpose.
 > `./verify-dispatch.sh` — **67 checks, 0 failures**, against committed fixtures;
 > **74 with `spawn`**, which adds a real worker container created through
 > `p1-dispatcher` from an orchestrator that has no Docker socket.
+>
+> One pass of this loop has since produced **three workers alive at the same
+> instant**, and refused a fourth ticket that declared a file one of them held.
+> The timestamps, the diffs and the refusal are in
+> [PARALLEL-RUN.md](PARALLEL-RUN.md), checked by `./verify-parallel.sh`.
 
 | File | Purpose |
 |---|---|
@@ -201,10 +206,13 @@ One worker container per ticket, through the existing body-validating dispatcher
 never sees a Docker socket and never constructs a create body, so it cannot
 widen a worker's privileges even if it wanted to.
 
-Worker containers are named `p1-p4w-<issue>`. The `p1-` prefix is not decoration:
-`p1-dispatcher` refuses any name outside its `WORKER_NAME_PREFIX` (default
-`p1-`), so that prefix is a hard requirement from the spawning contract; `p4w`
-marks them as this experiment's.
+Worker containers are named `<WORKER_NAME_PREFIX><issue>` — `hermes-worker-26`
+in the composed stack. The prefix is not decoration: `p1-dispatcher` refuses any
+name outside its own `WORKER_NAME_PREFIX`, so the two must agree exactly, and
+they are fed from **one** compose variable for that reason. Two components each
+with a defensible default disagreed once and every `/spawn` was refused, which
+reads as a spawn failure rather than as a configuration mismatch. The harness
+fixtures read the same variable.
 
 Measured, live (`./verify-dispatch.sh spawn`, with `./p1-spawn-setup.sh` up):
 
@@ -263,12 +271,14 @@ Without that control, "no token found" would also be what a broken grep reports.
 
 ## Failure modes that remain
 
-**Untested against live GitHub, because no credential exists here.** Everything
-in `GitHubClient` — pagination, the label add/remove endpoints, comment deletion,
-rate-limit backoff, the PR listing shape — is written from the API docs and
-exercised only through the fixture client, which implements the same interface.
-The scheduling logic is fully tested; *the transport is not*. First live run
-should be `plan` (read-only) against a scratch repository.
+**`GitHubClient` is now exercised against live GitHub, but only on the happy
+paths.** It has run `plan` and `dispatch` against the real target repository
+several times, including the three-worker run in `PARALLEL-RUN.md`, so issue
+listing, comment listing, the claim election, the label add/remove endpoints and
+comment deletion all work against the real API. What is still only fixture-tested
+is everything that needs an unusual response: pagination past one page,
+rate-limit backoff, and the PR listing shape the reaper reads. The harness cannot
+provoke those, and the live runs have not been large enough to.
 
 **The claim election costs API calls and is not free.** One `POST` plus one `GET`
 per candidate, on top of one comment fetch per open issue per pass. On a large

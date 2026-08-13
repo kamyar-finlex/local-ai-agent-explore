@@ -1,0 +1,56 @@
+{
+  "repo": "kamyar-finlex/trip-planner-test-project",
+  "pulls": [
+    {
+      "pull": 30,
+      "issue": 27,
+      "title": "7.2 - In-memory plan store, reopenable by id",
+      "head": "issue-27-7-2-in-memory-plan-store-reopena",
+      "base": "main",
+      "head_sha": "1393c76659f1ff99bc0a0dbb752552d68f6a59da",
+      "merge_base_sha": "ffa061195fa382389176b56346bf5f0083e14db6",
+      "declared_files": [
+        "app/store.py",
+        "tests/test_store.py"
+      ],
+      "changed_files": [
+        "app/store.py",
+        "tests/test_store.py"
+      ]
+    },
+    {
+      "pull": 31,
+      "issue": 26,
+      "title": "7.1 - Normalise visitor interest tags",
+      "head": "issue-26-7-1-normalise-visitor-interest-t",
+      "base": "main",
+      "head_sha": "cd341497c142e50860784ab3584367a3b1192415",
+      "merge_base_sha": "ffa061195fa382389176b56346bf5f0083e14db6",
+      "declared_files": [
+        "app/interests.py",
+        "tests/test_interests.py"
+      ],
+      "changed_files": [
+        "app/interests.py",
+        "tests/test_interests.py"
+      ]
+    },
+    {
+      "pull": 32,
+      "issue": 28,
+      "title": "7.3 - Budget verdict for a finished plan",
+      "head": "issue-28-7-3-budget-verdict-for-a-finishe",
+      "base": "main",
+      "head_sha": "ceccf280bb0f1969b2f833ebd1f383dcff9ee8a2",
+      "merge_base_sha": "ffa061195fa382389176b56346bf5f0083e14db6",
+      "declared_files": [
+        "app/summary.py",
+        "tests/test_summary.py"
+      ],
+      "changed_files": [
+        "app/summary.py",
+        "tests/test_summary.py"
+      ]
+    }
+  ]
+}
